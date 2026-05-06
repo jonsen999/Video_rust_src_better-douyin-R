@@ -34,6 +34,8 @@ Use the hash values to replace placeholders in:
 - `scoop/douyin-downloader.json`
 - `winget/AnYuJia.DouyinDownloader/*.yaml`
 
+Generated, version-pinned manifests are stored under `generated/<version>/` after a release has been published and hashes have been verified.
+
 ## Notes
 
 - Homebrew Cask usually belongs in `homebrew-cask/Casks/d/douyin-downloader.rb`.
