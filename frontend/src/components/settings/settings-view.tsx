@@ -79,7 +79,7 @@ export function SettingsView() {
   const [savingSettings, setSavingSettings] = useState(false);
 
   // Update state
-  const [appVersion, setAppVersion] = useState("0.0.11");
+  const [appVersion, setAppVersion] = useState("0.0.12");
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
   const [updateMessage, setUpdateMessage] = useState("");
   const [updateInfo, setUpdateInfo] = useState<{ version?: string; current_version?: string; notes?: string } | null>(null);

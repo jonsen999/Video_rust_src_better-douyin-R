@@ -29,6 +29,12 @@ const exampleLinks = [
   "https://www.douyin.com/video/734...",
 ];
 
+const commandPanelLayoutTransition = {
+  type: "spring",
+  duration: 0.32,
+  bounce: 0,
+} as const;
+
 export function CommandPopover() {
   const setCommandOpen = useAppStore((s) => s.setCommandOpen);
   const commandMode = useAppStore((s) => s.commandMode);
@@ -105,10 +111,16 @@ export function CommandPopover() {
 
       {/* Command Panel — centered on screen */}
       <motion.div
+        layout
         initial={{ opacity: 0, y: -16, scale: 0.96 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: -8, scale: 0.97 }}
-        transition={{ type: "spring", stiffness: 400, damping: 30 }}
+        transition={{
+          opacity: { duration: 0.15 },
+          scale: { type: "spring", duration: 0.3, bounce: 0 },
+          y: { type: "spring", duration: 0.3, bounce: 0 },
+          layout: commandPanelLayoutTransition,
+        }}
         className={cn(
           "fixed z-[1090] flex flex-col overflow-hidden",
           "inset-0 m-auto w-fit h-fit",
@@ -231,11 +243,16 @@ export function CommandPopover() {
         <div className="h-px bg-white/[0.06] mx-5" />
 
         {/* Content Area */}
-        <div className="px-5 py-4 max-h-[320px] overflow-y-auto">
-          <AnimatePresence mode="wait">
+        <motion.div
+          layout
+          transition={{ layout: commandPanelLayoutTransition }}
+          className="px-5 py-4 max-h-[320px] overflow-y-auto"
+        >
+          <AnimatePresence mode="wait" initial={false}>
             {/* Search mode: recent searches */}
             {isSearch && !value && (
               <motion.div
+                layout
                 key="search-empty"
                 initial={{ opacity: 0, y: 4 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -316,6 +333,7 @@ export function CommandPopover() {
             {/* Link mode: empty state */}
             {!isSearch && !value && (
               <motion.div
+                layout
                 key="link-empty"
                 initial={{ opacity: 0, y: 4 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -371,6 +389,7 @@ export function CommandPopover() {
             {/* Input active: action preview */}
             {value && (
               <motion.div
+                layout
                 key="action"
                 initial={{ opacity: 0, y: 4 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -401,7 +420,7 @@ export function CommandPopover() {
               </motion.div>
             )}
           </AnimatePresence>
-        </div>
+        </motion.div>
 
         {/* Footer keyboard hints */}
         <div className="flex items-center justify-between px-5 py-3 bg-white/[0.02]">

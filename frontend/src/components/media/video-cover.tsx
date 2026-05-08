@@ -32,7 +32,8 @@ export function VideoCover({
   const cover = getVideoCover(video);
   const coverUrl = useMemo(() => (cover ? mediaProxyUrl(cover, "image") : ""), [cover]);
   const [coverLoaded, setCoverLoaded] = useState(false);
-  const mediaItems = collectVideoMedia(video);
+  const [coverFailed, setCoverFailed] = useState(false);
+  const mediaItems = useMemo(() => collectVideoMedia(video), [video]);
   const fallbackMedia = mediaItems[0] || null;
   const durationSeconds = getVideoDurationSeconds(video);
   const durationLabel = durationSeconds > 0 ? formatDuration(durationSeconds) : "";
@@ -41,11 +42,12 @@ export function VideoCover({
 
   useEffect(() => {
     setCoverLoaded(false);
+    setCoverFailed(false);
   }, [coverUrl]);
 
   return (
     <div className={cn("relative overflow-hidden bg-surface", className)}>
-      {cover ? (
+      {coverUrl && !coverFailed ? (
         <>
           <div
             className={cn(
@@ -58,13 +60,14 @@ export function VideoCover({
             src={coverUrl}
             alt={video.desc}
             className={cn(
-              "h-full w-full object-cover transition-[opacity,transform] duration-[var(--duration-slow)] group-hover:scale-[1.05]",
+              "h-full w-full object-cover transition-[opacity,transform] duration-[var(--duration-slow)] will-change-transform group-hover:scale-[1.05]",
               coverLoaded ? "opacity-100" : "opacity-0",
               imageClassName
             )}
             loading="lazy"
             decoding="async"
             onLoad={() => setCoverLoaded(true)}
+            onError={() => setCoverFailed(true)}
           />
         </>
       ) : fallbackMedia && isVideoLikeMedia(fallbackMedia) ? (
@@ -94,7 +97,7 @@ export function VideoCover({
       <Badge
         variant="default"
         size="sm"
-        className="absolute right-2 top-2 border-white/20 bg-black/45 text-white backdrop-blur-sm"
+        className="pointer-events-none absolute right-2 top-2 border-white/20 bg-black/45 text-white backdrop-blur-sm"
       >
         {mediaTypeLabel}
       </Badge>
@@ -103,7 +106,7 @@ export function VideoCover({
         <Badge
           variant="secondary"
           size="sm"
-          className="absolute bottom-2 left-2 gap-1 border-white/15 bg-black/55 text-white backdrop-blur-sm"
+          className="pointer-events-none absolute bottom-2 left-2 gap-1 border-white/15 bg-black/55 text-white backdrop-blur-sm"
         >
           <Clock className="h-3 w-3" />
           {durationLabel}
@@ -111,7 +114,7 @@ export function VideoCover({
       )}
 
       {showStats && stats && (
-        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/45 to-transparent px-3 pb-3 pt-8 opacity-0 transition-opacity duration-[var(--duration-fast)] group-hover:opacity-100">
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/45 to-transparent px-3 pb-3 pt-8 opacity-0 transition-opacity duration-[var(--duration-fast)] group-hover:opacity-100">
           <div className="flex items-center justify-around text-[0.7rem] font-semibold text-white">
             <span className="flex flex-col items-center gap-0.5">
               <Heart className="h-4 w-4 text-accent" />

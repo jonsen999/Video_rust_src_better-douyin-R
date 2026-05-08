@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { useAppStore } from "@/stores/app-store";
 import { Sidebar } from "./sidebar";
 import { BottomBar } from "./bottom-bar";
@@ -16,6 +17,11 @@ import { easeConfig } from "@/lib/utils";
 export function AppShell() {
   const currentView = useAppStore((s) => s.currentView);
   const commandOpen = useAppStore((s) => s.commandOpen);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: 0, behavior: "auto" });
+  }, [currentView]);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden">
@@ -24,7 +30,7 @@ export function AppShell() {
 
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col min-w-0 relative">
-        <div className="flex-1 overflow-y-auto">
+        <div ref={scrollRef} className="flex-1 overflow-y-auto">
           <AnimatePresence initial={false}>
             {renderView(currentView)}
           </AnimatePresence>

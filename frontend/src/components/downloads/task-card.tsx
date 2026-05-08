@@ -110,55 +110,71 @@ export function TaskCard({
           <Progress value={progress} className="h-1.5 mb-1" />
         )}
 
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[0.68rem] text-text-muted tabular-nums">
-          {active && (
-            <>
-              <span>{progress.toFixed(1)}%</span>
-              {fileLabel && <span>{itemLabel} {fileLabel}</span>}
+        {active ? (
+          <div className="grid grid-cols-1 items-center gap-x-4 gap-y-1 text-[0.68rem] text-text-muted tabular-nums lg:grid-cols-[minmax(0,1fr)_auto]">
+            <div className="flex min-w-0 items-center gap-3 overflow-hidden">
+              <span className="shrink-0">{progress.toFixed(1)}%</span>
+              {fileLabel && <span className="shrink-0">{itemLabel} {fileLabel}</span>}
+              {task.skippedCount !== undefined && task.skippedCount > 0 && (
+                <span className="shrink-0">跳过 {task.skippedCount}</span>
+              )}
+              {task.failedCount !== undefined && task.failedCount > 0 && (
+                <span className="shrink-0 text-warning">失败 {task.failedCount}</span>
+              )}
               {task.currentName && (
-                <span className="max-w-[260px] truncate">
+                <span className="min-w-0 flex-1 truncate">
                   当前 {task.currentName}
                 </span>
               )}
+            </div>
+
+            <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-x-3 gap-y-1 whitespace-nowrap lg:min-w-[22rem] lg:flex-nowrap lg:justify-end">
               {currentProgress !== undefined && (
-                <span>当前 {currentProgress.toFixed(0)}%</span>
+                <span className="inline-block min-w-[3.5rem] text-right">当前 {currentProgress.toFixed(0)}%</span>
               )}
-              {task.speed > 0 && <span>{formatBytes(task.speed)}/s</span>}
+              {task.speed > 0 && (
+                <span className="inline-block min-w-[5rem] text-right">{formatBytes(task.speed)}/s</span>
+              )}
               {task.downloadedBytes !== undefined && (
-                <span>{formatBytes(task.downloadedBytes)}{task.totalBytes ? ` / ${formatBytes(task.totalBytes)}` : ""}</span>
+                <span className="inline-block text-right">
+                  {formatBytes(task.downloadedBytes)}{task.totalBytes ? ` / ${formatBytes(task.totalBytes)}` : ""}
+                </span>
               )}
               {task.etaSeconds !== undefined && task.etaSeconds > 0 && (
-                <span className="inline-flex items-center gap-1">
+                <span className="inline-flex min-w-[4.75rem] items-center justify-end gap-1">
                   <Clock3 className="w-3 h-3" />
                   约 {formatDurationLabel(task.etaSeconds)}
                 </span>
               )}
               {elapsedSeconds > 0 && (
-                <span className="inline-flex items-center gap-1">
+                <span className="inline-flex min-w-[4.75rem] items-center justify-end gap-1">
                   <Clock3 className="w-3 h-3" />
                   已用 {formatDurationLabel(elapsedSeconds)}
                 </span>
               )}
-              {startedAt && <span>开始 {startedAt}</span>}
-            </>
-          )}
-          {!active && fileLabel && <span>{itemLabel} {fileLabel}</span>}
-          {task.skippedCount !== undefined && task.skippedCount > 0 && (
-            <span>跳过 {task.skippedCount}</span>
-          )}
-          {task.failedCount !== undefined && task.failedCount > 0 && (
-            <span className="text-warning">失败 {task.failedCount}</span>
-          )}
-          {task.status === "completed" && task.totalBytes && (
-            <span>{formatBytes(task.totalBytes)}</span>
-          )}
-          {task.status === "completed" && task.finishedTime && (
-            <span>完成 {new Date(task.finishedTime).toLocaleTimeString()}</span>
-          )}
-          {(task.status === "error" || task.status === "cancelled") && task.errorMessage && (
-            <span className="truncate">{task.errorMessage}</span>
-          )}
-        </div>
+              {startedAt && <span className="inline-block min-w-[5rem] text-right">开始 {startedAt}</span>}
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[0.68rem] text-text-muted tabular-nums">
+            {fileLabel && <span>{itemLabel} {fileLabel}</span>}
+            {task.skippedCount !== undefined && task.skippedCount > 0 && (
+              <span>跳过 {task.skippedCount}</span>
+            )}
+            {task.failedCount !== undefined && task.failedCount > 0 && (
+              <span className="text-warning">失败 {task.failedCount}</span>
+            )}
+            {task.status === "completed" && task.totalBytes && (
+              <span>{formatBytes(task.totalBytes)}</span>
+            )}
+            {task.status === "completed" && task.finishedTime && (
+              <span>完成 {new Date(task.finishedTime).toLocaleTimeString()}</span>
+            )}
+            {(task.status === "error" || task.status === "cancelled") && task.errorMessage && (
+              <span className="truncate">{task.errorMessage}</span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Actions */}

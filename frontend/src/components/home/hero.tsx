@@ -7,7 +7,6 @@ import {
   FolderOpen,
   ArrowUpRight,
   Command,
-  Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AmbientBackground } from "./ambient-background";
@@ -118,7 +117,9 @@ export function Hero() {
 
         {/* Title — gradient text */}
         <motion.div variants={item} className="mb-2 flex items-center gap-2">
-          <Zap className="w-5 h-5 text-accent" />
+          <div className="h-9 w-9 overflow-hidden rounded-[14px] border border-border bg-surface-solid shadow-[0_10px_28px_rgba(0,0,0,0.12)]">
+            <img src="/animated_icon.svg" alt="Douyin Downloader" className="h-full w-full" />
+          </div>
           <h1 className="text-[1.35rem] font-[750] tracking-[-0.02em] text-center">
             <span className="bg-gradient-to-r from-text via-text to-text-secondary bg-clip-text">
               Douyin Downloader
@@ -155,7 +156,7 @@ export function Hero() {
                 "transition-[transform,box-shadow,border-color,background-color] duration-[var(--duration-base)] ease-[var(--ease-spring)]",
                 s.glowColor
               )}
-              whileHover={{ y: -4, scale: 1.01 }}
+              whileHover={{ scale: 1.01 }}
               whileTap={{ scale: 0.97 }}
             >
               {/* Gradient accent strip at top */}

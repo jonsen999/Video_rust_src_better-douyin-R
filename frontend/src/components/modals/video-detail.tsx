@@ -11,6 +11,7 @@ import {
   Share2,
   Link2,
   Copy,
+  Check,
   Image as ImageIcon,
   PlayCircle,
   X,
@@ -36,11 +37,13 @@ interface VideoDetailModalProps {
 export function VideoDetailModal({ video, open, onOpenChange, onDownload }: VideoDetailModalProps) {
   const [activeTab, setActiveTab] = useState<"cover" | "media">("cover");
   const [currentMediaIndex, setCurrentMediaIndex] = useState(0);
+  const [copiedLinkType, setCopiedLinkType] = useState<string | null>(null);
 
   useEffect(() => {
     if (!video) return;
     setActiveTab("cover");
     setCurrentMediaIndex(0);
+    setCopiedLinkType(null);
   }, [video]);
 
   if (!video) return null;
@@ -71,12 +74,20 @@ export function VideoDetailModal({ video, open, onOpenChange, onDownload }: Vide
     })),
     musicUrl && { label: "BGM", url: musicUrl, type: "audio" },
   ]);
+  const copyLink = (link: DetailLink) => {
+    const write = navigator.clipboard?.writeText(link.url);
+    if (!write) return;
+    void write.then(() => {
+      setCopiedLinkType(link.type);
+      window.setTimeout(() => setCopiedLinkType((current) => (current === link.type ? null : current)), 1_200);
+    });
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[calc(100vw-2rem)] max-w-[920px] max-h-[calc(100vh-2rem)] p-0 overflow-hidden rounded-[var(--radius-xl)]">
-        <div className="flex max-h-[80vh] min-w-0 overflow-hidden">
-          <div className="w-1/2 min-w-0 border-r border-border flex flex-col items-center overflow-hidden p-5 min-h-[300px] bg-surface/30">
+        <div className="flex max-h-[calc(100vh-2rem)] min-w-0 flex-col overflow-hidden md:max-h-[80vh] md:flex-row">
+          <div className="flex min-h-[260px] min-w-0 flex-col items-center overflow-hidden border-b border-border bg-surface/30 p-4 md:min-h-[300px] md:w-1/2 md:border-b-0 md:border-r md:p-5">
             {(coverUrl || hasMedia) && (
               <div className="flex max-w-full flex-wrap justify-center gap-1 mb-3">
                 {coverUrl && (
@@ -104,12 +115,12 @@ export function VideoDetailModal({ video, open, onOpenChange, onDownload }: Vide
               </div>
             )}
 
-            <div className="flex-1 flex items-center justify-center w-full min-w-0 overflow-hidden rounded-[var(--radius-md)] bg-black/20">
+            <div className="flex w-full min-w-0 flex-1 items-center justify-center overflow-hidden rounded-[var(--radius-md)] bg-black/20">
               {activeTab === "cover" && coverUrl ? (
                 <img
                   src={coverUrl}
                   alt={video.desc}
-                  className="max-w-full max-h-[420px] object-contain rounded-[var(--radius-md)]"
+                  className="max-h-[36vh] max-w-full rounded-[var(--radius-md)] object-contain md:max-h-[420px]"
                 />
               ) : currentMedia ? (
                 <div className="relative w-full h-full min-w-0 overflow-hidden flex items-center justify-center">
@@ -119,18 +130,18 @@ export function VideoDetailModal({ video, open, onOpenChange, onDownload }: Vide
                       poster={mediaProxyUrl(currentMedia.poster || coverRawUrl, "image")}
                       controls
                       playsInline
-                      className="max-w-full max-h-[420px] rounded-[var(--radius-md)]"
+                      className="max-h-[36vh] max-w-full rounded-[var(--radius-md)] md:max-h-[420px]"
                     />
                   ) : (
                     <img
                       src={mediaProxyUrl(currentMedia.url, "image")}
                       alt={`媒体 ${currentMediaIndex + 1}`}
-                      className="max-w-full max-h-[420px] object-contain rounded-[var(--radius-md)]"
+                      className="max-h-[36vh] max-w-full rounded-[var(--radius-md)] object-contain md:max-h-[420px]"
                     />
                   )}
 
                   {mediaItems.length > 1 && (
-                    <div className="absolute bottom-3 left-1/2 max-w-[90%] -translate-x-1/2 flex flex-wrap justify-center gap-1">
+                    <div className="absolute bottom-3 left-1/2 flex max-w-[90%] -translate-x-1/2 flex-wrap justify-center gap-0.5 rounded-full bg-black/35 px-1.5 py-1 backdrop-blur-md">
                       {mediaItems.map((item, index) => (
                         <button
                           key={`${item.type}-${item.url}-${index}`}
@@ -138,12 +149,16 @@ export function VideoDetailModal({ video, open, onOpenChange, onDownload }: Vide
                             setActiveTab("media");
                             setCurrentMediaIndex(index);
                           }}
-                          className={cn(
-                            "h-2 rounded-full transition-[width,background-color] cursor-pointer",
-                            index === currentMediaIndex ? "w-5 bg-accent" : "w-2 bg-white/40 hover:bg-white/60"
-                          )}
+                          className="flex h-6 w-6 items-center justify-center rounded-full cursor-pointer"
                           aria-label={`切换到第 ${index + 1} 个媒体`}
-                        />
+                        >
+                          <span
+                            className={cn(
+                              "h-1.5 rounded-full transition-[width,background-color,transform]",
+                              index === currentMediaIndex ? "w-4 bg-accent" : "w-1.5 bg-white/50 hover:bg-white/75"
+                            )}
+                          />
+                        </button>
                       ))}
                     </div>
                   )}
@@ -156,7 +171,7 @@ export function VideoDetailModal({ video, open, onOpenChange, onDownload }: Vide
             </div>
           </div>
 
-          <div className="w-1/2 min-w-0 flex flex-col overflow-hidden">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:w-1/2">
             <DialogHeader className="min-w-0 px-5 pt-4 pb-3 border-b border-border">
               <div className="flex min-w-0 items-center gap-2">
                 <DialogTitle className="min-w-0 truncate text-[0.95rem]">作品详情</DialogTitle>
@@ -167,7 +182,7 @@ export function VideoDetailModal({ video, open, onOpenChange, onDownload }: Vide
             <ScrollArea className="flex-1 min-h-0 min-w-0">
               <div className="min-w-0 p-5 flex flex-col gap-4">
                 {author && (
-                  <div className="flex min-w-0 items-center gap-3 p-3 rounded-[var(--radius-md)] bg-surface border border-border">
+                  <div className="flex min-w-0 items-center gap-3 rounded-[var(--radius-md)] border border-border bg-surface p-3">
                     <img
                       src={mediaProxyUrl(author.avatar_thumb || author.avatar_medium, "image")}
                       alt={author.nickname}
@@ -193,7 +208,7 @@ export function VideoDetailModal({ video, open, onOpenChange, onDownload }: Vide
                     {statItems.map((stat) => (
                       <div
                         key={stat.label}
-                        className="min-w-0 flex flex-col items-center gap-1 p-3 rounded-[var(--radius-md)] bg-background-soft/70 border border-border-strong shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] hover:bg-surface-raised hover:-translate-y-0.5 transition-[transform,border-color,background-color,box-shadow]"
+                        className="min-w-0 flex flex-col items-center gap-1 rounded-[var(--radius-md)] border border-border-strong bg-background-soft/70 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] transition-[border-color,background-color,box-shadow] hover:bg-surface-raised"
                       >
                         <stat.icon className={cn("w-4 h-4", stat.color)} />
                         <span className="max-w-full truncate text-[1.05rem] leading-tight font-extrabold text-text tabular-nums">
@@ -226,11 +241,21 @@ export function VideoDetailModal({ video, open, onOpenChange, onDownload }: Vide
                             {link.url}
                           </span>
                           <button
-                            onClick={() => navigator.clipboard?.writeText(link.url)}
-                            className="shrink-0 opacity-100 transition-opacity cursor-pointer sm:opacity-0 sm:group-hover:opacity-100"
+                            onClick={() => copyLink(link)}
+                            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-[8px] px-2 text-[0.68rem] text-text-muted opacity-100 transition-[background-color,color,opacity] hover:bg-surface-raised hover:text-accent sm:opacity-0 sm:group-hover:opacity-100"
                             aria-label={`复制${link.label}链接`}
                           >
-                            <Copy className="w-3 h-3 text-text-muted hover:text-accent" />
+                            {copiedLinkType === link.type ? (
+                              <>
+                                <Check className="w-3 h-3" />
+                                已复制
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3 h-3" />
+                                复制
+                              </>
+                            )}
                           </button>
                         </div>
                       ))}

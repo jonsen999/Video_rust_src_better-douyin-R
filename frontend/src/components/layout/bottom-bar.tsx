@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore, useDownloadStore, useLogStore } from "@/stores/app-store";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -17,6 +17,7 @@ export function BottomBar() {
   const logs = useLogStore((s) => s.logs);
   const clearLogs = useLogStore((s) => s.clearLogs);
   const [activeTab, setActiveTab] = useState("progress");
+  const logsViewportRef = useRef<HTMLDivElement>(null);
   const {
     cancelDownload,
     pauseTask,
@@ -27,6 +28,8 @@ export function BottomBar() {
   } = useDownloads();
 
   const tasksList = Object.values(tasks);
+  const visibleLogs = useMemo(() => logs.slice(-300), [logs]);
+  const hiddenLogCount = Math.max(0, logs.length - visibleLogs.length);
   const hasActiveTasks = activeCount > 0;
   const activeProgress =
     activeCount > 0
@@ -34,6 +37,16 @@ export function BottomBar() {
           .filter((task) => task.status === "downloading" || task.status === "pending" || task.status === "paused")
           .reduce((sum, task) => sum + (task.progress || 0), 0) / activeCount
       : 0;
+  const scrollLogsToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+    const viewport = logsViewportRef.current;
+    if (!viewport) return;
+    viewport.scrollTo({ top: viewport.scrollHeight, behavior });
+  }, []);
+
+  useEffect(() => {
+    if (!expanded || activeTab !== "logs") return;
+    scrollLogsToBottom("auto");
+  }, [activeTab, expanded, logs.length, scrollLogsToBottom]);
 
   return (
     <motion.div
@@ -146,13 +159,22 @@ export function BottomBar() {
                   >
                     <Trash2 className="w-3 h-3" />
                   </button>
-                  <button className="w-6 h-6 rounded flex items-center justify-center text-text-muted hover:text-text hover:bg-surface-raised transition-[background-color,color,transform,opacity] cursor-pointer">
+                  <button
+                    onClick={() => scrollLogsToBottom()}
+                    className="w-6 h-6 rounded flex items-center justify-center text-text-muted hover:text-text hover:bg-surface-raised transition-[background-color,color,transform,opacity] cursor-pointer"
+                    title="滚动到底部"
+                  >
                     <ArrowDown className="w-3 h-3" />
                   </button>
                 </div>
-                <ScrollArea className="h-[calc(100%-28px)]">
+                <ScrollArea className="h-[calc(100%-28px)]" viewportRef={logsViewportRef}>
                   <div className="font-mono text-[11px] leading-relaxed text-text-secondary">
-                    {logs.map((log) => (
+                    {hiddenLogCount > 0 && (
+                      <div className="py-0.5 text-text-muted">
+                        已折叠较早的 {hiddenLogCount} 条日志
+                      </div>
+                    )}
+                    {visibleLogs.map((log) => (
                       <div
                         key={log.id}
                         className={cn(

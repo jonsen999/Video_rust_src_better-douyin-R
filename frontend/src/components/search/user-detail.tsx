@@ -131,7 +131,7 @@ export function UserDetail() {
               tabIndex={0}
               initial={false}
               animate={{ opacity: 1, y: 0 }}
-              className="group rounded-[18px] border border-border bg-surface-solid/80 p-4 text-left hover:border-border-strong hover:-translate-y-0.5 hover:shadow-md transition-[transform,box-shadow,border-color,background-color] cursor-pointer"
+              className="group rounded-[18px] border border-border bg-surface-solid/80 p-4 text-left hover:border-border-strong hover:shadow-md active:scale-[0.99] transition-[transform,box-shadow,border-color,background-color] cursor-pointer"
             >
               <div className="flex items-center gap-3 mb-3">
                 <UserAvatar
@@ -252,12 +252,12 @@ export function UserDetailCard({ user, busy, onDownloadAll, onViewVideos }: User
           className="w-[76px] h-[76px] border-[3px] border-white shadow-[0_10px_28px_rgba(15,23,42,0.16)]"
         />
 
-        <div className="flex-1 min-w-[220px]">
+        <div className="min-w-0 flex-1 sm:min-w-[220px]">
           <h3 className="text-[1.2rem] font-[780] tracking-tight text-slate-950 mb-1.5">
             {user.nickname}
           </h3>
-          <span className="inline-flex items-center px-2.5 py-1 rounded-full border border-slate-200 bg-slate-50 text-[0.72rem] font-mono text-slate-600">
-            @{user.unique_id || user.sec_uid}
+          <span className="inline-flex max-w-full items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[0.72rem] font-mono text-slate-600">
+            <span className="truncate">@{user.unique_id || user.sec_uid}</span>
           </span>
           {user.signature && (
             <p className="text-[0.8rem] text-slate-600 mt-2 line-clamp-2 leading-relaxed">
@@ -266,9 +266,9 @@ export function UserDetailCard({ user, busy, onDownloadAll, onViewVideos }: User
           )}
         </div>
 
-        <div className="flex items-center gap-0 shrink-0 flex-wrap">
+        <div className="grid w-full shrink-0 grid-cols-2 gap-2 sm:w-auto sm:flex sm:items-center sm:gap-0">
           {stats.map((stat, index) => (
-            <div key={stat.label} className="flex items-baseline gap-1.5 px-4 relative py-1">
+            <div key={stat.label} className="relative flex items-baseline justify-center gap-1.5 rounded-[12px] bg-slate-50 px-3 py-2 sm:rounded-none sm:bg-transparent sm:px-4 sm:py-1">
               <span className="text-[1.15rem] font-[780] tracking-tight text-slate-950 tabular-nums">
                 {formatNumber(stat.value)}
               </span>
@@ -276,7 +276,7 @@ export function UserDetailCard({ user, busy, onDownloadAll, onViewVideos }: User
                 {stat.label}
               </span>
               {index < stats.length - 1 && (
-                <div className="absolute right-0 top-[20%] bottom-[20%] w-px bg-gradient-to-b from-transparent via-slate-200 to-transparent" />
+                <div className="absolute right-0 top-[20%] bottom-[20%] hidden w-px bg-gradient-to-b from-transparent via-slate-200 to-transparent sm:block" />
               )}
             </div>
           ))}

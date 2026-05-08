@@ -71,14 +71,21 @@ export function LikedView() {
                 key={key}
                 onClick={() => setTab(key)}
                 className={cn(
-                  "relative flex items-center gap-2 px-3 h-9 rounded-[10px] text-[0.78rem] font-semibold cursor-pointer transition-[background-color,color,box-shadow,opacity]",
+                  "relative flex h-9 items-center gap-2 overflow-hidden rounded-[10px] px-3 text-[0.78rem] font-semibold cursor-pointer transition-[color,opacity]",
                   tab === key
-                    ? "bg-accent-soft text-accent shadow-[inset_0_0_0_1px_var(--color-accent-ring)]"
+                    ? "text-accent"
                     : "text-text-muted hover:text-text hover:bg-surface-raised"
                 )}
               >
-                <Icon className="w-3.5 h-3.5" />
-                {label}
+                {tab === key && (
+                  <motion.div
+                    layoutId="liked-tab-active"
+                    className="absolute inset-0 rounded-[10px] bg-accent-soft shadow-[inset_0_0_0_1px_var(--color-accent-ring)]"
+                    transition={{ type: "spring", duration: 0.28, bounce: 0 }}
+                  />
+                )}
+                <Icon className="relative w-3.5 h-3.5" />
+                <span className="relative">{label}</span>
               </button>
             ))}
           </div>

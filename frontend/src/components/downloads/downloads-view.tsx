@@ -201,6 +201,14 @@ export function DownloadsView() {
     }
   }, [filePage, totalFilePages]);
 
+  useEffect(() => {
+    const validIds = new Set(historyList.map((item) => item.id));
+    setSelectedFiles((current) => {
+      const next = new Set([...current].filter((id) => validIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [historyList]);
+
   const toggleSelectAll = useCallback(() => {
     setSelectedFiles((current) => {
       const next = new Set(current);
@@ -250,6 +258,12 @@ export function DownloadsView() {
         await deleteFile(item.path);
       }
       await deleteHistoryItem(item.aweme_id || item.id);
+      setSelectedFiles((current) => {
+        if (!current.has(item.id)) return current;
+        const next = new Set(current);
+        next.delete(item.id);
+        return next;
+      });
       void loadHistory();
       void loadDiskFiles();
       addLog(removeFile ? "已删除文件和记录" : "已移除下载记录", "info");

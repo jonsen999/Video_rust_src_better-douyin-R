@@ -9,7 +9,7 @@ import {
   type TouchEvent as ReactTouchEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion, type Variants } from "framer-motion";
 import {
   Download,
   Heart,
@@ -48,7 +48,27 @@ const LOAD_MORE_THRESHOLD = 3;
 const PLAYER_VIDEO_MAX_AUTO_RETRIES = 1;
 const PLAYER_VIDEO_BUFFERING_DELAY_MS = 450;
 const PLAYER_VIDEO_LOAD_TIMEOUT_MS = 18_000;
+const MAX_PRELOADED_MEDIA_NODES = 24;
+const MEDIA_TRANSITION_DISTANCE = 34;
 const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
+
+const mediaMotionVariants: Variants = {
+  enter: (direction = 0) => ({
+    opacity: 0,
+    x: direction * MEDIA_TRANSITION_DISTANCE,
+    scale: 0.992,
+  }),
+  center: {
+    opacity: 1,
+    x: 0,
+    scale: 1,
+  },
+  exit: (direction = 0) => ({
+    opacity: 0,
+    x: direction * -MEDIA_TRANSITION_DISTANCE,
+    scale: 0.992,
+  }),
+};
 
 function playerMediaProxyUrl(url: string | null | undefined, mediaType: "video" | "image" | "audio", retryKey = 0): string {
   const proxied = mediaProxyUrl(url, mediaType);
@@ -81,8 +101,11 @@ export function FullscreenPlayer({
   const [reloadKey, setReloadKey] = useState(0);
   const [bgmPlaying, setBgmPlaying] = useState(false);
   const [videoOverrides, setVideoOverrides] = useState<Record<string, VideoInfo>>({});
+  const [mediaTransitionDirection, setMediaTransitionDirection] = useState(0);
+  const playerRootRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const bgmRef = useRef<HTMLAudioElement>(null);
+  const bgmSourceKeyRef = useRef("");
   const touchStart = useRef({ x: 0, y: 0 });
   const wheelLocked = useRef(false);
   const loadMoreRequestedForLength = useRef(0);
@@ -131,6 +154,11 @@ export function FullscreenPlayer({
   const musicUrl = getVideoBgmUrl(currentVideo);
   const bgmProxyUrl = musicUrl ? mediaProxyUrl(musicUrl, "audio") : "";
   const effectiveVolume = muted ? 0 : volume;
+  const shouldUseBgmForCurrentMedia = Boolean(
+    currentMedia &&
+      musicUrl &&
+      (shouldUseSeparateBgm(currentMedia) || hasMultipleMedia)
+  );
 
   const stopVideoProgressLoop = useCallback(() => {
     if (videoProgressRafRef.current === null) return;
@@ -180,6 +208,7 @@ export function FullscreenPlayer({
     if (index < 0 || index >= videos.length) return;
     desiredPlayingRef.current = true;
     mediaSwitchingRef.current = false;
+    setMediaTransitionDirection(0);
     setCurrentIndex(index);
     setMediaIndex(0);
     setCurrentTime(0);
@@ -205,6 +234,7 @@ export function FullscreenPlayer({
   const switchToMedia = useCallback((index: number) => {
     if (mediaItems.length === 0) return;
     const safeIndex = ((index % mediaItems.length) + mediaItems.length) % mediaItems.length;
+    const direction = resolveMediaDirection(mediaIndex, safeIndex, mediaItems.length);
     const shouldKeepPlaying = desiredPlayingRef.current || playing;
     desiredPlayingRef.current = shouldKeepPlaying;
     mediaSwitchingRef.current = true;
@@ -212,6 +242,7 @@ export function FullscreenPlayer({
       window.clearTimeout(mediaSwitchReleaseRef.current);
     }
     setMediaIndex(safeIndex);
+    setMediaTransitionDirection(direction);
     setCurrentTime(0);
     setDuration(0);
     setPlaying(shouldKeepPlaying);
@@ -306,9 +337,11 @@ export function FullscreenPlayer({
   const ensureBgmSource = useCallback(() => {
     const audio = bgmRef.current;
     if (!audio || !bgmProxyUrl) return null;
-    if (audio.src !== bgmProxyUrl) {
+    if (bgmSourceKeyRef.current !== bgmProxyUrl) {
+      bgmSourceKeyRef.current = bgmProxyUrl;
       audio.src = bgmProxyUrl;
       audio.loop = true;
+      audio.preload = "auto";
       audio.load();
     }
     audio.volume = effectiveVolume / 100;
@@ -444,7 +477,7 @@ export function FullscreenPlayer({
     loadTimeoutTimerRef.current = window.setTimeout(() => {
       const node = videoRef.current;
       if (!currentMedia || !isVideoLikeMedia(currentMedia)) return;
-      if (node && node.readyState >= HTMLMediaElement.HAVE_METADATA) return;
+      if (node && node.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) return;
       void handleMediaFailure();
     }, PLAYER_VIDEO_LOAD_TIMEOUT_MS);
   }, [currentMedia, handleMediaFailure]);
@@ -461,17 +494,57 @@ export function FullscreenPlayer({
     }, PLAYER_VIDEO_BUFFERING_DELAY_MS);
   }, []);
 
+  const preloadMediaItem = useCallback((media: VideoMediaItem | null | undefined, full = false) => {
+    if (!media) return;
+
+    const proxiedUrl = mediaProxyUrl(media.url, getMediaProxyType(media));
+    const key = `${media.type}::${proxiedUrl}`;
+    if (!proxiedUrl || preloadedMediaRef.current.has(key)) return;
+    preloadedMediaRef.current.add(key);
+
+    if (media.type === "image") {
+      const image = new Image();
+      image.decoding = "async";
+      image.loading = "eager";
+      image.src = proxiedUrl;
+      preloadedNodesRef.current.push(image);
+    } else {
+      const video = document.createElement("video");
+      video.preload = full ? "auto" : "metadata";
+      video.muted = true;
+      video.playsInline = true;
+      video.src = proxiedUrl;
+      video.load();
+      preloadedNodesRef.current.push(video);
+    }
+
+    while (preloadedNodesRef.current.length > MAX_PRELOADED_MEDIA_NODES) {
+      const removed = preloadedNodesRef.current.shift();
+      if (removed instanceof HTMLVideoElement) {
+        removed.pause();
+        removed.removeAttribute("src");
+        removed.load();
+      }
+    }
+  }, []);
+
   useEffect(() => {
     if (!open) return;
+    const focusTimer = window.setTimeout(() => {
+      playerRootRef.current?.focus({ preventScroll: true });
+    }, 0);
+
     const safeIndex = Math.min(Math.max(initialIndex, 0), Math.max(videos.length - 1, 0));
     desiredPlayingRef.current = true;
     mediaSwitchingRef.current = false;
+    setMediaTransitionDirection(0);
     setCurrentIndex(safeIndex);
     setMediaIndex(0);
     setCurrentTime(0);
     setDuration(0);
     setPlaying(false);
     setReloadKey((value) => value + 1);
+    return () => window.clearTimeout(focusTimer);
   }, [initialIndex, open, videos.length]);
 
   useEffect(() => {
@@ -521,21 +594,15 @@ export function FullscreenPlayer({
     setShowLoadStatus(false);
     clearLoadTimers();
 
-    const nextPlaying = currentMedia
-      ? currentMedia.type === "image"
-        ? desiredPlayingRef.current
-        : desiredPlayingRef.current
-      : false;
-
     setCurrentTime(0);
     setDuration(currentMedia?.type === "image" ? IMAGE_DURATION_SECONDS : 0);
-    setLoadState(currentMedia ? (isVideoLikeMedia(currentMedia) ? "loading" : "ready") : "error");
-    setPlaying(Boolean(nextPlaying));
+    setLoadState(currentMedia ? "loading" : "error");
+    setPlaying(false);
 
-    if (!currentMedia || !shouldUseSeparateBgm(currentMedia)) {
-      pauseBgm();
-    } else if (desiredPlayingRef.current && musicUrl) {
+    if (shouldUseBgmForCurrentMedia && desiredPlayingRef.current) {
       playBgm();
+    } else if (!mediaSwitchingRef.current) {
+      pauseBgm();
     }
 
     if (currentMedia && isVideoLikeMedia(currentMedia)) {
@@ -544,7 +611,7 @@ export function FullscreenPlayer({
       }, PLAYER_VIDEO_BUFFERING_DELAY_MS);
       scheduleLoadTimeout();
     }
-  }, [clearLoadTimers, currentMedia, mediaKey, musicUrl, pauseBgm, playBgm, scheduleLoadTimeout]);
+  }, [clearLoadTimers, currentMedia, mediaKey, pauseBgm, playBgm, scheduleLoadTimeout, shouldUseBgmForCurrentMedia]);
 
   useEffect(() => {
     if (!open || !currentVideo || mediaItems.length > 0) return;
@@ -566,48 +633,39 @@ export function FullscreenPlayer({
 
   useEffect(() => {
     preloadedMediaRef.current.clear();
+    for (const node of preloadedNodesRef.current) {
+      if (node instanceof HTMLVideoElement) {
+        node.pause();
+        node.removeAttribute("src");
+        node.load();
+      }
+    }
     preloadedNodesRef.current = [];
   }, [currentVideo?.aweme_id]);
 
   useEffect(() => {
-    if (!open || mediaItems.length <= 1) return;
+    if (!open || mediaItems.length <= 1 || loadState !== "ready") return;
 
-    const candidateIndexes = [mediaIndex + 1, mediaIndex - 1]
-      .map((index) => ((index % mediaItems.length) + mediaItems.length) % mediaItems.length);
+    const orderedIndexes = [
+      ...Array.from({ length: mediaItems.length - mediaIndex - 1 }, (_, offset) => mediaIndex + offset + 1),
+      ...Array.from({ length: mediaIndex }, (_, offset) => offset),
+    ];
+    let cancelled = false;
+    const timers: number[] = [];
 
-    for (const index of candidateIndexes) {
-      const media = mediaItems[index];
-      if (!media) continue;
+    orderedIndexes.forEach((index, order) => {
+      const timer = window.setTimeout(() => {
+        if (cancelled) return;
+        preloadMediaItem(mediaItems[index], true);
+      }, order * 140);
+      timers.push(timer);
+    });
 
-      const proxiedUrl = mediaProxyUrl(media.url, getMediaProxyType(media));
-      const key = `${media.type}::${proxiedUrl}`;
-      if (!proxiedUrl || preloadedMediaRef.current.has(key)) continue;
-      preloadedMediaRef.current.add(key);
-
-      if (media.type === "image") {
-        const image = new Image();
-        image.decoding = "async";
-        image.src = proxiedUrl;
-        preloadedNodesRef.current.push(image);
-      } else {
-        const video = document.createElement("video");
-        video.preload = "metadata";
-        video.muted = true;
-        video.playsInline = true;
-        video.src = proxiedUrl;
-        video.load();
-        preloadedNodesRef.current.push(video);
-      }
-
-      if (preloadedNodesRef.current.length > 8) {
-        const removed = preloadedNodesRef.current.shift();
-        if (removed instanceof HTMLVideoElement) {
-          removed.removeAttribute("src");
-          removed.load();
-        }
-      }
-    }
-  }, [mediaIndex, mediaItems, open]);
+    return () => {
+      cancelled = true;
+      timers.forEach((timer) => window.clearTimeout(timer));
+    };
+  }, [loadState, mediaIndex, mediaItems, open, preloadMediaItem]);
 
   useEffect(() => {
     if (!open || !currentMedia || !isVideoLikeMedia(currentMedia)) return;
@@ -628,10 +686,10 @@ export function FullscreenPlayer({
     const wantsBgm =
       open &&
       currentMedia &&
-      shouldUseSeparateBgm(currentMedia) &&
-      Boolean(musicUrl) &&
+      shouldUseBgmForCurrentMedia &&
       desiredPlayingRef.current &&
-      (playing || mediaSwitchingRef.current || loadState === "loading" || currentMedia.type === "image");
+      loadState !== "error" &&
+      (playing || mediaSwitchingRef.current || loadState === "loading" || currentMedia.type === "image" || hasMultipleMedia);
 
     if (wantsBgm) {
       playBgm();
@@ -641,7 +699,7 @@ export function FullscreenPlayer({
     if (!mediaSwitchingRef.current) {
       pauseBgm();
     }
-  }, [currentMedia, loadState, musicUrl, open, pauseBgm, playBgm, playing]);
+  }, [currentMedia, hasMultipleMedia, loadState, open, pauseBgm, playBgm, playing, shouldUseBgmForCurrentMedia]);
 
   useEffect(() => {
     const audio = bgmRef.current;
@@ -666,7 +724,7 @@ export function FullscreenPlayer({
     const video = videoRef.current;
     if (video) {
       video.volume = nextVolume;
-      video.muted = muted || volume === 0;
+      video.muted = shouldUseBgmForCurrentMedia || muted || volume === 0;
       video.playbackRate = playbackRate;
     }
 
@@ -675,7 +733,7 @@ export function FullscreenPlayer({
       audio.volume = nextVolume;
       audio.muted = muted || volume === 0;
     }
-  }, [effectiveVolume, mediaKey, muted, playbackRate, volume]);
+  }, [effectiveVolume, mediaKey, muted, playbackRate, shouldUseBgmForCurrentMedia, volume]);
 
   useEffect(() => {
     stopVideoProgressLoop();
@@ -712,30 +770,36 @@ export function FullscreenPlayer({
   useEffect(() => {
     if (!open) return;
     const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-      if (event.key === "ArrowUp" || event.key.toLowerCase() === "k") {
-        event.preventDefault();
+      const key = event.key;
+      const lowerKey = key.toLowerCase();
+      const isEditableTarget = isKeyboardInputTarget(event.target);
+      let handled = true;
+
+      if (key === "Escape") {
+        onClose();
+      } else if (isEditableTarget) {
+        handled = false;
+      } else if (key === "ArrowUp" || lowerKey === "k") {
         playPrevVideo();
-      }
-      if (event.key === "ArrowDown" || event.key.toLowerCase() === "j") {
-        event.preventDefault();
+      } else if (key === "ArrowDown" || lowerKey === "j") {
         playNextVideo();
-      }
-      if (event.key === "ArrowLeft") {
-        event.preventDefault();
+      } else if (key === "ArrowLeft") {
         playPrevMedia();
-      }
-      if (event.key === "ArrowRight") {
-        event.preventDefault();
+      } else if (key === "ArrowRight") {
         playNextMedia();
-      }
-      if (event.key === " ") {
-        event.preventDefault();
+      } else if (key === " ") {
         togglePlay();
+      } else {
+        handled = false;
       }
+
+      if (!handled) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
     };
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
+    window.addEventListener("keydown", handleKey, true);
+    return () => window.removeEventListener("keydown", handleKey, true);
   }, [open, onClose, playNextMedia, playNextVideo, playPrevMedia, playPrevVideo, togglePlay]);
 
   const handleWheel = useCallback((event: ReactWheelEvent) => {
@@ -779,6 +843,10 @@ export function FullscreenPlayer({
     <AnimatePresence>
       {open && currentVideo && (
         <motion.div
+          ref={playerRootRef}
+          tabIndex={-1}
+          role="dialog"
+          aria-modal="true"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -801,97 +869,106 @@ export function FullscreenPlayer({
           </div>
 
           <div className="relative flex min-h-0 flex-1 items-center justify-center" onClick={togglePlay}>
-            <motion.div
-              key={mediaKey}
-              initial={false}
-              animate={{ opacity: 1 }}
-              transition={{ duration: 0.12, ease: [0.2, 0, 0, 1] }}
-              className="absolute inset-0 flex items-center justify-center"
-            >
-              {currentMedia && isVideoLikeMedia(currentMedia) && (
-                <video
-                  ref={videoRef}
-                  src={currentMediaSrc}
-                  poster={currentPosterSrc}
-                  className="h-full max-h-full w-full max-w-full object-contain"
-                  loop={!hasMultipleMedia}
-                  playsInline
-                  preload="metadata"
-                  onLoadStart={scheduleLoadTimeout}
-                  onWaiting={showBufferingSoon}
-                  onStalled={showBufferingSoon}
-                  onLoadedMetadata={(event) => {
-                    setDuration(event.currentTarget.duration || 0);
-                    event.currentTarget.volume = effectiveVolume / 100;
-                    event.currentTarget.muted = muted || volume === 0;
-                    event.currentTarget.playbackRate = playbackRate;
-                    markMediaReady();
-                  }}
-                  onCanPlay={(event) => {
-                    markMediaReady();
-                    if (!shouldUseSeparateBgm(currentMedia)) {
-                      pauseBgm();
-                    } else if (desiredPlayingRef.current && musicUrl) {
-                      playBgm();
-                    }
-                    if (desiredPlayingRef.current && event.currentTarget.paused) {
-                      void event.currentTarget.play().then(() => {
+            <AnimatePresence initial={false} custom={mediaTransitionDirection}>
+              <motion.div
+                key={mediaKey}
+                custom={mediaTransitionDirection}
+                variants={mediaMotionVariants}
+                initial="enter"
+                animate="center"
+                exit="exit"
+                transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
+                className="absolute inset-0 flex items-center justify-center"
+                style={{ willChange: "transform, opacity" }}
+              >
+                {currentMedia && isVideoLikeMedia(currentMedia) && (
+                  <video
+                    ref={videoRef}
+                    src={currentMediaSrc}
+                    poster={currentPosterSrc}
+                    className="h-full max-h-full w-full max-w-full object-contain"
+                    loop={!hasMultipleMedia}
+                    playsInline
+                    muted={shouldUseBgmForCurrentMedia || muted || volume === 0}
+                    preload="auto"
+                    onLoadStart={scheduleLoadTimeout}
+                    onWaiting={showBufferingSoon}
+                    onStalled={showBufferingSoon}
+                    onLoadedMetadata={(event) => {
+                      setDuration(event.currentTarget.duration || 0);
+                      event.currentTarget.volume = effectiveVolume / 100;
+                      event.currentTarget.muted = shouldUseBgmForCurrentMedia || muted || volume === 0;
+                      event.currentTarget.playbackRate = playbackRate;
+                    }}
+                    onCanPlay={(event) => {
+                      markMediaReady();
+                      if (shouldUseBgmForCurrentMedia && desiredPlayingRef.current) {
+                        playBgm();
+                      } else {
+                        pauseBgm();
+                      }
+                      if (desiredPlayingRef.current && event.currentTarget.paused) {
+                        void event.currentTarget.play().then(() => {
+                          setPlaying(true);
+                          startVideoProgressLoop();
+                        }).catch(() => setPlaying(false));
+                      } else if (desiredPlayingRef.current) {
                         setPlaying(true);
                         startVideoProgressLoop();
-                      }).catch(() => setPlaying(false));
-                    } else if (desiredPlayingRef.current) {
+                      }
+                    }}
+                    onPlay={() => {
+                      desiredPlayingRef.current = true;
                       setPlaying(true);
                       startVideoProgressLoop();
-                    }
-                  }}
-                  onPlay={() => {
-                    desiredPlayingRef.current = true;
-                    setPlaying(true);
-                    startVideoProgressLoop();
-                  }}
-                  onPause={() => {
-                    stopVideoProgressLoop();
-                    if (!mediaSwitchingRef.current) {
-                      setPlaying(false);
-                      desiredPlayingRef.current = false;
-                    }
-                  }}
-                  onEnded={() => {
-                    stopVideoProgressLoop();
-                    advanceMediaSequence();
-                  }}
-                  onError={() => {
-                    void handleMediaFailure();
-                  }}
-                />
-              )}
+                    }}
+                    onPause={() => {
+                      stopVideoProgressLoop();
+                      if (!mediaSwitchingRef.current) {
+                        setPlaying(false);
+                        desiredPlayingRef.current = false;
+                      }
+                    }}
+                    onEnded={() => {
+                      stopVideoProgressLoop();
+                      advanceMediaSequence();
+                    }}
+                    onError={() => {
+                      void handleMediaFailure();
+                    }}
+                  />
+                )}
 
-              {currentMedia?.type === "image" && (
-                <img
-                  src={currentMediaSrc}
-                  alt={currentVideo.desc || "图片"}
-                  className="max-h-full max-w-full object-contain"
-                  onLoad={() => {
-                    markMediaReady();
-                    if (desiredPlayingRef.current && musicUrl) {
-                      playBgm();
-                    }
-                  }}
-                  onError={() => {
-                    void handleMediaFailure();
-                  }}
-                />
-              )}
+                {currentMedia?.type === "image" && (
+                  <img
+                    src={currentMediaSrc}
+                    alt={currentVideo.desc || "图片"}
+                    className="max-h-full max-w-full object-contain"
+                    onLoad={() => {
+                      markMediaReady();
+                      if (desiredPlayingRef.current) {
+                        setPlaying(true);
+                        if (shouldUseBgmForCurrentMedia) {
+                          playBgm();
+                        }
+                      }
+                    }}
+                    onError={() => {
+                      void handleMediaFailure();
+                    }}
+                  />
+                )}
 
-              {!currentMedia && (
-                <PlayerStatus
-                  title="没有可播放的媒体"
-                  message="当前作品没有返回视频或图片地址。"
-                  onRetry={retryCurrentMedia}
-                  state="error"
-                />
-              )}
-            </motion.div>
+                {!currentMedia && (
+                  <PlayerStatus
+                    title="没有可播放的媒体"
+                    message="当前作品没有返回视频或图片地址。"
+                    onRetry={retryCurrentMedia}
+                    state="error"
+                  />
+                )}
+              </motion.div>
+            </AnimatePresence>
 
             {loadState === "loading" && showLoadStatus && currentMedia && isVideoLikeMedia(currentMedia) && (
               <PlayerStatus title="正在加载媒体..." message="正在通过本地代理拉取播放地址" />
@@ -1184,8 +1261,8 @@ function ProgressBar({
                 aria-label={`切换到第 ${index + 1} 个媒体`}
               >
                 <span
-                  className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-white/90 to-accent transition-none"
-                  style={{ width: `${fill}%` }}
+                  className="absolute inset-y-0 left-0 w-full origin-left rounded-full bg-gradient-to-r from-white/90 to-accent transition-transform duration-100 ease-linear"
+                  style={{ transform: `scaleX(${fill / 100})` }}
                 />
               </button>
             );
@@ -1203,8 +1280,8 @@ function ProgressBar({
         onClick={onSeek}
       >
         <div
-          className="absolute inset-y-0 left-0 rounded-full bg-accent transition-none"
-          style={{ width: `${progressPct}%` }}
+          className="absolute inset-y-0 left-0 w-full origin-left rounded-full bg-accent transition-transform duration-100 ease-linear"
+          style={{ transform: `scaleX(${progressPct / 100})` }}
         />
         <div
           className="absolute top-1/2 h-3 w-3 -translate-y-1/2 rounded-full bg-white opacity-0 shadow-md transition-opacity group-hover:opacity-100"
@@ -1320,4 +1397,19 @@ function PlayerStatus({
       )}
     </div>
   );
+}
+
+function resolveMediaDirection(currentIndex: number, nextIndex: number, total: number): number {
+  if (total <= 1 || currentIndex === nextIndex) return 0;
+  const forwardDistance = (nextIndex - currentIndex + total) % total;
+  const backwardDistance = (currentIndex - nextIndex + total) % total;
+  return forwardDistance <= backwardDistance ? 1 : -1;
+}
+
+function isKeyboardInputTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+
+  const tagName = target.tagName.toLowerCase();
+  return tagName === "input" || tagName === "textarea" || tagName === "select";
 }

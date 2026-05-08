@@ -113,7 +113,7 @@ export function QuickStats() {
       initial={false}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
-      className="w-full grid grid-cols-4 gap-2"
+      className="w-full grid grid-cols-2 gap-2 sm:grid-cols-4"
     >
       {stats.map((s) => (
         <button
