@@ -2,10 +2,9 @@
 // Tauri IPC Wrappers
 // ═══════════════════════════════════════════════
 
-import { convertFileSrc } from "@tauri-apps/api/core";
-
 type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 const MEDIA_PROXY_BASE = "http://127.0.0.1:39143/api/media/proxy";
+const LOCAL_MEDIA_BASE = "http://127.0.0.1:39143/api/local-media";
 
 function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const tauriInvoke = (window as Window & {
@@ -20,7 +19,36 @@ function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> 
     return Promise.reject(new Error("Tauri API unavailable"));
   }
 
-  return tauriInvoke<T>(command, args);
+  return tauriInvoke<T>(command, args)
+    .then((result) => {
+      emitCookieInvalidIfNeeded(result);
+      return result;
+    })
+    .catch((error) => {
+      emitCookieInvalidFromError(error);
+      throw error;
+    });
+}
+
+function emitCookieInvalidIfNeeded(payload: unknown) {
+  if (!payload || typeof payload !== "object") return;
+  const data = payload as Record<string, unknown>;
+  const message = String(data.message || "Cookie 已失效，请重新登录").trim();
+  const failedWithLoginMessage = data.success === false && isCookieInvalidMessage(message);
+  if (!data.need_login && !failedWithLoginMessage) return;
+
+  window.dispatchEvent(new CustomEvent("dy-cookie-invalid", { detail: { message } }));
+}
+
+function emitCookieInvalidFromError(error: unknown) {
+  const message = getErrorMessage(error, "");
+  if (!message) return;
+  if (!isCookieInvalidMessage(message)) return;
+  window.dispatchEvent(new CustomEvent("dy-cookie-invalid", { detail: { message } }));
+}
+
+function isCookieInvalidMessage(message: string) {
+  return /用户未登录|未登录|请先登录|请先设置\s*Cookie|登录态|重新登录|not login|not logged in|login required|session expired/i.test(message);
 }
 
 export function mediaProxyUrl(url: string | null | undefined, mediaType = "image"): string {
@@ -41,13 +69,13 @@ export function mediaProxyUrl(url: string | null | undefined, mediaType = "image
 }
 
 export function localFileAssetUrl(path: string | null | undefined): string {
-  const trimmed = (path || "").trim();
+  const raw = path || "";
+  const trimmed = raw.trim();
   if (!trimmed) return "";
-  try {
-    return convertFileSrc(trimmed);
-  } catch {
-    return "";
-  }
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed;
+  if (trimmed.startsWith("data:") || trimmed.startsWith("blob:")) return trimmed;
+  if (trimmed.includes("127.0.0.1:39143/api/local-media")) return trimmed;
+  return `${LOCAL_MEDIA_BASE}?path=${encodeURIComponent(raw)}`;
 }
 
 // ── Types matching Rust backend structs ──
@@ -171,14 +199,15 @@ export interface SearchResult {
 export interface ApiResponse {
   success: boolean;
   message?: string;
+  need_verify?: boolean;
+  need_login?: boolean;
+  verify_url?: string;
 }
 
 export interface SearchUserResponse extends ApiResponse {
   type?: "single" | "multiple";
   user?: UserInfo;
   users?: UserInfo[];
-  need_verify?: boolean;
-  verify_url?: string;
 }
 
 export interface UserDetailResponse extends ApiResponse {
@@ -479,8 +508,23 @@ export function normalizeLikedVideo(item: unknown): VideoInfo | null {
   };
 }
 
+function normalizeCount(value: unknown): number {
+  if (typeof value === "string") {
+    const text = value.trim().replace(/,/g, "");
+    const match = text.match(/^(\d+(?:\.\d+)?)([wW万kK千])?$/);
+    if (match) {
+      const unit = match[2]?.toLowerCase();
+      const multiplier = unit === "w" || unit === "万" ? 10000 : unit === "k" || unit === "千" ? 1000 : 1;
+      return Math.round(Number(match[1]) * multiplier);
+    }
+  }
+
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : 0;
+}
+
 function normalizeUser(user: unknown): UserInfo {
-  const source = user && typeof user === "object" ? (user as Partial<UserInfo>) : {};
+  const source = user && typeof user === "object" ? (user as Partial<UserInfo> & Record<string, unknown>) : {};
   return {
     uid: source.uid || "",
     sec_uid: source.sec_uid || "",
@@ -489,11 +533,11 @@ function normalizeUser(user: unknown): UserInfo {
     avatar_medium: source.avatar_medium || source.avatar_thumb || source.avatar_larger || "",
     avatar_larger: source.avatar_larger || source.avatar_medium || source.avatar_thumb || "",
     signature: source.signature || "",
-    follower_count: source.follower_count || 0,
-    following_count: source.following_count || 0,
-    total_favorited: source.total_favorited || 0,
-    aweme_count: source.aweme_count || 0,
-    favoriting_count: source.favoriting_count || 0,
+    follower_count: normalizeCount(source.follower_count),
+    following_count: normalizeCount(source.following_count),
+    total_favorited: normalizeCount(source.total_favorited),
+    aweme_count: normalizeCount(source.aweme_count ?? source.aweme_count_str ?? source.aweme_count_text ?? source.work_count),
+    favoriting_count: normalizeCount(source.favoriting_count),
     is_follow: source.is_follow || false,
     unique_id: source.unique_id || "",
     verify_status: source.verify_status || 0,
@@ -669,11 +713,32 @@ export async function getAppVersion(): Promise<string> {
   return invoke("get_app_version");
 }
 
-export async function checkUpdate(): Promise<{ success: boolean; has_update: boolean; version?: string; current_version?: string; notes?: string; message?: string }> {
+export async function checkUpdate(): Promise<{
+  success: boolean;
+  has_update: boolean;
+  version?: string;
+  current_version?: string;
+  notes?: string;
+  message?: string;
+  download_url?: string;
+  asset_name?: string;
+  asset_size?: number;
+  portable?: boolean;
+  install_mode?: string;
+}> {
   return invoke("check_update");
 }
 
-export async function downloadUpdate(): Promise<{ success: boolean; message: string }> {
+export async function downloadUpdate(): Promise<{
+  success: boolean;
+  message: string;
+  mode?: string;
+  portable?: boolean;
+  install_mode?: string;
+  restart_required?: boolean;
+  download_url?: string;
+  file_path?: string;
+}> {
   return invoke("download_update");
 }
 
@@ -793,11 +858,11 @@ export async function downloadUserVideos(
   });
 }
 
-export async function downloadLikedVideos(count: number): Promise<{ success: boolean; message: string }> {
+export async function downloadLikedVideos(count: number): Promise<ApiResponse & { task_id?: string; total_videos?: number }> {
   return invoke("download_liked_videos", { count });
 }
 
-export async function downloadLikedAuthors(count: number): Promise<{ success: boolean; message: string }> {
+export async function downloadLikedAuthors(count: number): Promise<ApiResponse & { task_id?: string; task_ids?: string[]; count?: number }> {
   return invoke("download_liked_authors", { count });
 }
 

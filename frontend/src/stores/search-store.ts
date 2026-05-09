@@ -92,6 +92,38 @@ function formatSearchErrorMessage(message: string | undefined, fallback = "搜�
   return text.length > 240 ? `${text.slice(0, 180)}...` : text;
 }
 
+function isSameUser(left: UserInfo, right: UserInfo): boolean {
+  if (left.sec_uid && right.sec_uid) return left.sec_uid === right.sec_uid;
+  if (left.uid && right.uid) return left.uid === right.uid;
+  return Boolean(left.nickname && right.nickname && left.nickname === right.nickname);
+}
+
+function shouldEnrichSearchUser(user: UserInfo): boolean {
+  return Boolean(user.sec_uid && (!user.aweme_count || user.aweme_count <= 0));
+}
+
+function mergeDetailedUserIntoSearchState(
+  current: SearchStoreState,
+  target: UserInfo,
+  detail: UserInfo
+): Partial<SearchStoreState> {
+  const users = current.users.map((user) =>
+    isSameUser(user, target) ? mergeUserInfo(user, detail) : user
+  );
+  const currentUser =
+    current.currentUser && isSameUser(current.currentUser, target)
+      ? mergeUserInfo(current.currentUser, detail)
+      : current.currentUser;
+
+  return { users, currentUser };
+}
+
+function openVerifyWindow(verifyUrl: string | undefined, addLog: (message: string, type: "info" | "success" | "warning" | "error") => void) {
+  void openVerifyBrowser(verifyUrl)
+    .then((result) => addLog(result.message, result.success ? "info" : "warning"))
+    .catch(() => addLog("无法打开应用内验证窗口，请用桌面模式启动后重试", "warning"));
+}
+
 function uniqueVideos(existing: VideoInfo[], incoming: VideoInfo[]) {
   const seen = new Set(existing.map((video) => video.aweme_id).filter(Boolean));
   const next = [...existing];
@@ -137,11 +169,29 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
     addLog(`搜索用户: ${query}`, "info");
 
     try {
+      const enrichSearchUserStats = (baseUsers: UserInfo[]) => {
+        const candidates = baseUsers.filter(shouldEnrichSearchUser).slice(0, 10);
+        if (candidates.length === 0) return;
+
+        void (async () => {
+          for (let index = 0; index < candidates.length; index += 3) {
+            const batch = candidates.slice(index, index + 3);
+            await Promise.allSettled(
+              batch.map(async (user) => {
+                const detail = await getUserDetail(user.sec_uid, user.nickname);
+                if (requestId !== latestSearchRequestId || !detail.success || !detail.user) return;
+                set((current) => mergeDetailedUserIntoSearchState(current, user, detail.user!));
+              })
+            );
+          }
+        })();
+      };
+
       const result = await searchUser(query);
       if (requestId !== latestSearchRequestId) return;
 
       if (result.need_verify) {
-        void openVerifyBrowser(result.verify_url).catch(() => {});
+        openVerifyWindow(result.verify_url, addLog);
         const message = result.message || "需要完成抖音验证";
         set({ searching: false, error: message });
         addLog(message, "warning");
@@ -166,6 +216,7 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
           error: null,
         });
         addLog(`已匹配用户: ${result.user.nickname}`, "success");
+        enrichSearchUserStats([result.user]);
         return;
       }
 
@@ -180,6 +231,7 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
         error: users.length > 0 ? null : "未找到用户",
       });
       addLog(`找到 ${users.length} 个候选用户`, users.length > 0 ? "success" : "warning");
+      enrichSearchUserStats(users);
     } catch (error) {
       if (requestId !== latestSearchRequestId) return;
       const message = formatSearchErrorMessage(error instanceof Error ? error.message : undefined);
@@ -208,6 +260,14 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
     try {
       const detail = await getUserDetail(user.sec_uid, user.nickname);
       if (requestId !== latestUserRequestId) return;
+
+      if (detail.need_verify) {
+        openVerifyWindow(detail.verify_url, addLog);
+        const message = detail.message || "需要完成抖音验证";
+        set({ loadingUser: false, error: message, currentUser: user });
+        addLog(message, "warning");
+        return;
+      }
 
       if (!detail.success || !detail.user) {
         const message = detail.message || "获取用户详情失败";
@@ -252,6 +312,14 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
       const result = await getUserVideos(secUid, PAGE_SIZE, 0);
       if (requestId !== latestVideoRequestId || get().currentUser?.sec_uid !== secUid) return;
 
+      if (result.need_verify) {
+        openVerifyWindow(result.verify_url, addLog);
+        const message = result.message || "需要完成抖音验证";
+        set({ loadingVideos: false, error: message });
+        addLog(message, "warning");
+        return;
+      }
+
       if (!result.success) {
         const message = result.message || "获取作品列表失败";
         set({ loadingVideos: false, error: message });
@@ -291,6 +359,14 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
     try {
       const result = await getUserVideos(secUid, PAGE_SIZE, cursor);
       if (requestId !== latestLoadMoreRequestId || get().currentUser?.sec_uid !== secUid) return;
+
+      if (result.need_verify) {
+        openVerifyWindow(result.verify_url, addLog);
+        const message = result.message || "需要完成抖音验证";
+        set({ loadingMore: false, error: message });
+        addLog(message, "warning");
+        return;
+      }
 
       if (!result.success) {
         const message = result.message || "加载更多失败";

@@ -81,6 +81,106 @@ impl Default for AppState {
     }
 }
 
+fn looks_like_login_error(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    message.contains("用户未登录")
+        || message.contains("未登录")
+        || message.contains("登录态")
+        || message.contains("重新登录")
+        || lower.contains("not login")
+        || lower.contains("not logged in")
+        || lower.contains("login required")
+        || lower.contains("session expired")
+}
+
+fn looks_like_verify_error(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    message.contains("验证")
+        || message.contains("风控")
+        || message.contains("访问频繁")
+        || message.contains("请稍后重试")
+        || lower.contains("verify")
+        || lower.contains("captcha")
+        || lower.contains("passport")
+}
+
+fn login_required_message(message: &str) -> String {
+    if message.trim().is_empty() || looks_like_login_error(message) {
+        "用户未登录，请在设置中重新登录并刷新 Cookie".to_string()
+    } else {
+        format!("登录态校验失败: {}", message)
+    }
+}
+
+fn login_required_response(message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "success": false,
+        "need_login": true,
+        "message": login_required_message(message)
+    })
+}
+
+fn cookie_required_response() -> serde_json::Value {
+    serde_json::json!({
+        "success": false,
+        "need_login": true,
+        "message": "请先设置Cookie"
+    })
+}
+
+fn verify_required_response(message: &str, verify_url: &str) -> serde_json::Value {
+    let message = if message.trim().is_empty() {
+        "需要完成滑块验证后重试"
+    } else {
+        message
+    };
+
+    serde_json::json!({
+        "success": false,
+        "need_verify": true,
+        "verify_url": verify_url,
+        "message": message
+    })
+}
+
+async fn login_required_if_cookie_invalid(client: &DouyinClient) -> Option<serde_json::Value> {
+    match client.get_current_user().await {
+        Ok(_) => None,
+        Err(error) => Some(login_required_response(&error.to_string())),
+    }
+}
+
+async fn login_or_verify_response(
+    client: &DouyinClient,
+    message: &str,
+    verify_url: &str,
+) -> serde_json::Value {
+    if let Some(response) = login_required_if_cookie_invalid(client).await {
+        response
+    } else {
+        verify_required_response(message, verify_url)
+    }
+}
+
+async fn api_login_or_verify_error_response(
+    client: &DouyinClient,
+    prefix: &str,
+    error: impl std::fmt::Display,
+    verify_url: &str,
+) -> serde_json::Value {
+    let message = error.to_string();
+    if looks_like_login_error(&message) {
+        login_required_response(&message)
+    } else if looks_like_verify_error(&message) {
+        login_or_verify_response(client, &format!("{}: {}", prefix, message), verify_url).await
+    } else {
+        serde_json::json!({
+            "success": false,
+            "message": format!("{}: {}", prefix, message)
+        })
+    }
+}
+
 async fn get_client(state: &State<'_, AppState>) -> Result<DouyinClient, String> {
     state
         .client
@@ -195,24 +295,18 @@ async fn open_verify_browser(
         .filter(|value| !value.is_empty())
         .unwrap_or("https://www.douyin.com/");
     let target_url = Url::parse(requested_url).map_err(|error| format!("URL 无效: {}", error))?;
-
-    if let Some(window) = app.get_webview_window("verify-browser") {
-        let _ = window.set_focus();
-        let _ = window.show();
-        return Ok(serde_json::json!({
-            "success": true,
-            "message": "验证窗口已打开，请完成验证"
-        }));
-    }
-
     let cookie_literal =
         serde_json::to_string(&cookie).map_err(|error| format!("Cookie 序列化失败: {}", error))?;
-    let init_script = format!(
+    let cookie_script = format!(
         r#"
         (() => {{
             const rawCookie = {cookie_literal};
             if (!rawCookie) return;
-            if (window.sessionStorage && sessionStorage.getItem('__dy_verify_cookie_applied') === '1') return;
+            try {{
+                if (window.sessionStorage) {{
+                    sessionStorage.removeItem('__dy_verify_cookie_applied');
+                }}
+            }} catch (error) {{}}
             rawCookie.split(';').map(item => item.trim()).filter(Boolean).forEach(item => {{
                 try {{
                     document.cookie = `${{item}}; domain=.douyin.com; path=/`;
@@ -220,13 +314,25 @@ async fn open_verify_browser(
             }});
             try {{
                 if (window.sessionStorage) {{
-                    sessionStorage.setItem('__dy_verify_cookie_applied', '1');
+                    sessionStorage.setItem('__dy_verify_cookie_applied', String(Date.now()));
                     setTimeout(() => window.location.reload(), 120);
                 }}
             }} catch (error) {{}}
         }})();
         "#
     );
+
+    if let Some(window) = app.get_webview_window("verify-browser") {
+        let _ = window.set_focus();
+        let _ = window.show();
+        let _ = window.eval(&cookie_script);
+        let _ = window.navigate(target_url);
+        return Ok(serde_json::json!({
+            "success": true,
+            "message": "验证窗口已打开，请完成验证",
+            "open_url": requested_url
+        }));
+    }
 
     tauri::WebviewWindowBuilder::new(
         &app,
@@ -237,13 +343,14 @@ async fn open_verify_browser(
     .inner_size(1100.0, 750.0)
     .resizable(true)
     .focused(true)
-    .initialization_script(&init_script)
+    .initialization_script(&cookie_script)
     .build()
     .map_err(|error| format!("无法打开验证窗口: {}", error))?;
 
     Ok(serde_json::json!({
         "success": true,
-        "message": "验证窗口已打开，请完成验证"
+        "message": "验证窗口已打开，请完成验证",
+        "open_url": requested_url
     }))
 }
 
@@ -549,20 +656,20 @@ async fn parse_link(state: State<'_, AppState>, link: String) -> Result<serde_js
     let client = match get_client(&state).await {
         Ok(client) => client,
         Err(_) => {
-            return Ok(serde_json::json!({
-                "success": false,
-                "message": "请先设置Cookie"
-            }));
+            return Ok(cookie_required_response());
         }
     };
 
     let video = match client.parse_share_link(&trimmed_link).await {
         Ok(video) => video,
         Err(e) => {
-            return Ok(serde_json::json!({
-                "success": false,
-                "message": format!("解析链接失败: {}", e)
-            }));
+            return Ok(api_login_or_verify_error_response(
+                &client,
+                "解析链接失败",
+                e,
+                "https://www.douyin.com/",
+            )
+            .await)
         }
     };
 
@@ -616,10 +723,7 @@ async fn get_video_detail(
     let client = match get_client(&state).await {
         Ok(client) => client,
         Err(_) => {
-            return Ok(serde_json::json!({
-                "success": false,
-                "message": "请先设置Cookie"
-            }));
+            return Ok(cookie_required_response());
         }
     };
 
@@ -628,10 +732,13 @@ async fn get_video_detail(
             "success": true,
             "video": python_video_detail_value(&video)
         })),
-        Err(e) => Ok(serde_json::json!({
-            "success": false,
-            "message": format!("获取视频详情失败: {}", e)
-        })),
+        Err(e) => Ok(api_login_or_verify_error_response(
+            &client,
+            "获取视频详情失败",
+            e,
+            &format!("https://www.douyin.com/video/{}", aweme_id),
+        )
+        .await),
     }
 }
 
@@ -652,20 +759,23 @@ async fn search_user(
     let client = match get_client(&state).await {
         Ok(client) => client,
         Err(_) => {
-            return Ok(serde_json::json!({
-                "success": false,
-                "message": "请先设置Cookie"
-            }));
+            return Ok(cookie_required_response());
         }
     };
 
     match client.search_user(&keyword).await {
-        Ok(api::SearchUserResult::NeedVerify { verify_url }) => Ok(serde_json::json!({
-            "success": false,
-            "need_verify": true,
-            "verify_url": verify_url,
-            "message": "需要完成滑块验证"
-        })),
+        Ok(api::SearchUserResult::NeedVerify { verify_url }) => {
+            if let Some(response) = login_required_if_cookie_invalid(&client).await {
+                Ok(response)
+            } else {
+                Ok(serde_json::json!({
+                    "success": false,
+                    "need_verify": true,
+                    "verify_url": verify_url,
+                    "message": "需要完成滑块验证"
+                }))
+            }
+        }
         Ok(api::SearchUserResult::NotFound) => Ok(serde_json::json!({
             "success": false,
             "message": "未找到用户"
@@ -680,10 +790,19 @@ async fn search_user(
             "type": "multiple",
             "users": users.iter().map(python_user_value).collect::<Vec<_>>()
         })),
-        Err(e) => Ok(serde_json::json!({
-            "success": false,
-            "message": format!("搜索失败: {}", e)
-        })),
+        Err(e) => {
+            let message = e.to_string();
+            if looks_like_login_error(&message) {
+                Ok(login_required_response(&message))
+            } else if looks_like_verify_error(&message) {
+                Ok(login_or_verify_response(&client, &message, "https://www.douyin.com/").await)
+            } else {
+                Ok(serde_json::json!({
+                    "success": false,
+                    "message": format!("搜索失败: {}", e)
+                }))
+            }
+        }
     }
 }
 
@@ -706,10 +825,7 @@ async fn get_user_detail(
     let client = match get_client(&state).await {
         Ok(client) => client,
         Err(_) => {
-            return Ok(serde_json::json!({
-                "success": false,
-                "message": "请先设置Cookie"
-            }));
+            return Ok(cookie_required_response());
         }
     };
 
@@ -718,10 +834,24 @@ async fn get_user_detail(
             "success": true,
             "user": python_user_value(&user_detail.info)
         })),
-        Err(e) => Ok(serde_json::json!({
-            "success": false,
-            "message": format!("获取用户详情失败: {}", e)
-        })),
+        Err(e) => {
+            let message = e.to_string();
+            if looks_like_login_error(&message) {
+                Ok(login_required_response(&message))
+            } else if looks_like_verify_error(&message) {
+                Ok(login_or_verify_response(
+                    &client,
+                    &message,
+                    &format!("https://www.douyin.com/user/{}", sec_uid),
+                )
+                .await)
+            } else {
+                Ok(serde_json::json!({
+                    "success": false,
+                    "message": format!("获取用户详情失败: {}", e)
+                }))
+            }
+        }
     }
 }
 
@@ -744,10 +874,7 @@ async fn get_user_videos(
     let client = match get_client(&state).await {
         Ok(client) => client,
         Err(_) => {
-            return Ok(serde_json::json!({
-                "success": false,
-                "message": "请先设置Cookie"
-            }));
+            return Ok(cookie_required_response());
         }
     };
 
@@ -767,10 +894,24 @@ async fn get_user_videos(
                 "total_count": total_count
             }))
         }
-        Err(e) => Ok(serde_json::json!({
-            "success": false,
-            "message": format!("获取用户视频列表失败: {}", e)
-        })),
+        Err(e) => {
+            let message = e.to_string();
+            if looks_like_login_error(&message) {
+                Ok(login_required_response(&message))
+            } else if looks_like_verify_error(&message) {
+                Ok(login_or_verify_response(
+                    &client,
+                    &message,
+                    &format!("https://www.douyin.com/user/{}", sec_uid),
+                )
+                .await)
+            } else {
+                Ok(serde_json::json!({
+                    "success": false,
+                    "message": format!("获取用户视频列表失败: {}", e)
+                }))
+            }
+        }
     }
 }
 
@@ -785,10 +926,7 @@ async fn get_liked_videos(
     let client = match get_client(&state).await {
         Ok(client) => client,
         Err(_) => {
-            return Ok(serde_json::json!({
-                "success": false,
-                "message": "请先设置Cookie"
-            }));
+            return Ok(cookie_required_response());
         }
     };
 
@@ -804,14 +942,29 @@ async fn get_liked_videos(
                 "count": count
             }))
         }
-        Ok(_) => Ok(serde_json::json!({
-            "success": false,
-            "message": "获取点赞视频失败。该接口需要登录态，请确认Cookie有效且包含完整的登录信息。如果Cookie已过期请重新获取。"
-        })),
-        Err(e) => Ok(serde_json::json!({
-            "success": false,
-            "message": format!("获取点赞视频失败: {}", e)
-        })),
+        Ok(_) => {
+            if let Some(response) = login_required_if_cookie_invalid(&client).await {
+                Ok(response)
+            } else {
+                Ok(verify_required_response(
+                    "获取点赞视频失败，请完成验证后重试",
+                    "https://www.douyin.com/",
+                ))
+            }
+        }
+        Err(e) => {
+            let message = e.to_string();
+            if looks_like_login_error(&message) {
+                Ok(login_required_response(&message))
+            } else if looks_like_verify_error(&message) {
+                Ok(login_or_verify_response(&client, &message, "https://www.douyin.com/").await)
+            } else {
+                Ok(serde_json::json!({
+                    "success": false,
+                    "message": format!("获取点赞视频失败: {}", e)
+                }))
+            }
+        }
     }
 }
 
@@ -824,16 +977,22 @@ async fn get_liked_authors(
     let client = match get_client(&state).await {
         Ok(client) => client,
         Err(_) => {
-            return Ok(serde_json::json!({
-                "success": false,
-                "message": "请先设置Cookie"
-            }));
+            return Ok(cookie_required_response());
         }
     };
 
     let liked_videos = match client.get_liked_videos_python_style("", 0, count).await {
         Ok(videos) => videos,
         Err(e) => {
+            let message = e.to_string();
+            if looks_like_login_error(&message) {
+                return Ok(login_required_response(&message));
+            }
+            if looks_like_verify_error(&message) {
+                return Ok(
+                    login_or_verify_response(&client, &message, "https://www.douyin.com/").await,
+                );
+            }
             return Ok(serde_json::json!({
                 "success": false,
                 "message": format!("获取点赞作者失败: {}", e)
@@ -842,10 +1001,13 @@ async fn get_liked_authors(
     };
 
     if liked_videos.is_empty() {
-        return Ok(serde_json::json!({
-            "success": false,
-            "message": "获取点赞作者失败。该接口需要登录态，请确认Cookie有效且包含完整的登录信息。"
-        }));
+        if let Some(response) = login_required_if_cookie_invalid(&client).await {
+            return Ok(response);
+        }
+        return Ok(verify_required_response(
+            "获取点赞作者失败，请完成验证后重试",
+            "https://www.douyin.com/",
+        ));
     }
 
     let mut seen = HashSet::new();
@@ -875,10 +1037,13 @@ async fn get_liked_authors(
     }
 
     if authors.is_empty() {
-        return Ok(serde_json::json!({
-            "success": false,
-            "message": "获取点赞作者失败。该接口需要登录态，请确认Cookie有效且包含完整的登录信息。"
-        }));
+        if let Some(response) = login_required_if_cookie_invalid(&client).await {
+            return Ok(response);
+        }
+        return Ok(verify_required_response(
+            "获取点赞作者失败，请完成验证后重试",
+            "https://www.douyin.com/",
+        ));
     }
 
     let count = authors.len();
@@ -899,10 +1064,7 @@ async fn get_recommended(
     let client = match get_client(&state).await {
         Ok(client) => client,
         Err(_) => {
-            return Ok(serde_json::json!({
-                "success": false,
-                "message": "请先登录抖音账号"
-            }));
+            return Ok(cookie_required_response());
         }
     };
 
@@ -911,6 +1073,18 @@ async fn get_recommended(
     let (videos, next_cursor, has_more) = match client.get_recommended_feed(cursor, count).await {
         Ok(result) => result,
         Err(e) => {
+            let message = e.to_string();
+            if looks_like_login_error(&message) {
+                return Ok(login_required_response(&message));
+            }
+            if looks_like_verify_error(&message) {
+                return Ok(login_or_verify_response(
+                    &client,
+                    &message,
+                    "https://www.douyin.com/?recommend=1",
+                )
+                .await);
+            }
             log::error!(
                 "get_recommended failed: cursor={} count={} error={}",
                 cursor,
@@ -956,14 +1130,29 @@ async fn get_comments(
     cursor: i64,
     count: u32,
 ) -> Result<serde_json::Value, String> {
-    let client = get_client(&state).await?;
+    let client = match get_client(&state).await {
+        Ok(client) => client,
+        Err(_) => {
+            return Ok(cookie_required_response());
+        }
+    };
 
-    let (comments, next_cursor, has_more) = client
-        .get_comments(&aweme_id, cursor, count)
-        .await
-        .map_err(|e| e.to_string())?;
+    let (comments, next_cursor, has_more) =
+        match client.get_comments(&aweme_id, cursor, count).await {
+            Ok(result) => result,
+            Err(e) => {
+                return Ok(api_login_or_verify_error_response(
+                    &client,
+                    "获取评论失败",
+                    e,
+                    &format!("https://www.douyin.com/video/{}", aweme_id),
+                )
+                .await)
+            }
+        };
 
     Ok(serde_json::json!({
+        "success": true,
         "comments": comments,
         "cursor": next_cursor,
         "has_more": has_more
@@ -1159,12 +1348,13 @@ async fn download_user_videos(
     let client = match get_client(&state).await {
         Ok(client) => client,
         Err(_) => {
-            return Ok(serde_json::json!({
-                "success": false,
-                "message": "请先设置Cookie"
-            }));
+            return Ok(cookie_required_response());
         }
     };
+
+    if let Some(response) = login_required_if_cookie_invalid(&client).await {
+        return Ok(response);
+    }
 
     let batch_task_id = uuid::Uuid::new_v4().to_string();
     let total_videos = aweme_count.max(0) as usize;
@@ -1225,16 +1415,22 @@ async fn download_liked_videos(
     let client = match get_client(&state).await {
         Ok(client) => client,
         Err(_) => {
-            return Ok(serde_json::json!({
-                "success": false,
-                "message": "请先设置Cookie"
-            }));
+            return Ok(cookie_required_response());
         }
     };
 
     let (videos, _, _) = match client.get_liked_videos("", 0, count).await {
         Ok(result) => result,
         Err(e) => {
+            let message = e.to_string();
+            if looks_like_login_error(&message) {
+                return Ok(login_required_response(&message));
+            }
+            if looks_like_verify_error(&message) {
+                return Ok(
+                    login_or_verify_response(&client, &message, "https://www.douyin.com/").await,
+                );
+            }
             return Ok(serde_json::json!({
                 "success": false,
                 "message": format!("获取视频列表失败: {}", e)
@@ -1243,10 +1439,13 @@ async fn download_liked_videos(
     };
 
     if videos.is_empty() {
-        return Ok(serde_json::json!({
-            "success": false,
-            "message": "没有找到点赞视频"
-        }));
+        if let Some(response) = login_required_if_cookie_invalid(&client).await {
+            return Ok(response);
+        }
+        return Ok(verify_required_response(
+            "没有找到点赞视频，请完成验证后重试",
+            "https://www.douyin.com/",
+        ));
     }
 
     let batch_task_id = uuid::Uuid::new_v4().to_string();
@@ -1295,10 +1494,7 @@ async fn download_liked_authors(
     let client = match get_client(&state).await {
         Ok(client) => client,
         Err(_) => {
-            return Ok(serde_json::json!({
-                "success": false,
-                "message": "请先设置Cookie"
-            }));
+            return Ok(cookie_required_response());
         }
     };
 
@@ -1319,12 +1515,31 @@ async fn download_liked_authors(
     {
         Ok(videos) => videos,
         Err(e) => {
+            let message = e.to_string();
+            if looks_like_login_error(&message) {
+                return Ok(login_required_response(&message));
+            }
+            if looks_like_verify_error(&message) {
+                return Ok(
+                    login_or_verify_response(&client, &message, "https://www.douyin.com/").await,
+                );
+            }
             return Ok(serde_json::json!({
                 "success": false,
                 "message": format!("下载失败: {}", e)
             }));
         }
     };
+
+    if liked_videos.is_empty() {
+        if let Some(response) = login_required_if_cookie_invalid(&client).await {
+            return Ok(response);
+        }
+        return Ok(verify_required_response(
+            "没有找到点赞作者，请完成验证后重试",
+            "https://www.douyin.com/",
+        ));
+    }
 
     let mut seen = HashSet::new();
     let mut task_ids = Vec::new();
@@ -1335,16 +1550,39 @@ async fn download_liked_authors(
             continue;
         }
 
-        if let Ok((videos, _, _)) = client.get_user_videos(&sec_uid, 0, 100).await {
-            for user_video in &videos {
-                if let Ok(task_id) = downloader.add_task(user_video, None).await {
-                    let _ = downloader.start_download(&task_id).await;
-                    task_ids.push(task_id);
+        match client.get_user_videos(&sec_uid, 0, 100).await {
+            Ok((videos, _, _)) => {
+                for user_video in &videos {
+                    if let Ok(task_id) = downloader.add_task(user_video, None).await {
+                        let _ = downloader.start_download(&task_id).await;
+                        task_ids.push(task_id);
+                    }
+                }
+            }
+            Err(e) => {
+                let message = e.to_string();
+                if looks_like_login_error(&message) {
+                    return Ok(login_required_response(&message));
+                }
+                if looks_like_verify_error(&message) {
+                    return Ok(login_or_verify_response(
+                        &client,
+                        &message,
+                        &format!("https://www.douyin.com/user/{}", sec_uid),
+                    )
+                    .await);
                 }
             }
         }
     }
     let count = task_ids.len();
+
+    if task_ids.is_empty() {
+        return Ok(serde_json::json!({
+            "success": false,
+            "message": "没有可下载的点赞作者作品"
+        }));
+    }
 
     Ok(serde_json::json!({
         "success": true,
