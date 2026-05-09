@@ -1239,28 +1239,34 @@ async fn download_video(
     }
     let mut media_urls = parse_download_media_items(&video, &raw_media_type);
     let mut media_type = media_type_from_payload_or_items(&raw_media_type, &media_urls);
+    let should_refresh_video_media =
+        raw_media_type == MEDIA_TYPE_VIDEO || raw_media_type == "unknown";
+    let mut fresh_video: Option<VideoInfo> = None;
 
-    if (media_urls.is_empty() || desc.is_empty() || cover.is_empty()) && !aweme_id.is_empty() {
+    if (should_refresh_video_media || media_urls.is_empty() || desc.is_empty() || cover.is_empty())
+        && !aweme_id.is_empty()
+    {
         if let Ok(client) = get_client(&state).await {
-            if let Ok(fresh_video) = client.get_video_detail(&aweme_id).await {
+            if let Ok(refreshed_video) = client.get_video_detail(&aweme_id).await {
                 if desc.is_empty() {
-                    desc = fresh_video.desc.clone();
+                    desc = refreshed_video.desc.clone();
                 }
                 if author_name.is_empty() {
-                    author_name = fresh_video.author.nickname.clone();
+                    author_name = refreshed_video.author.nickname.clone();
                 }
                 if cover.is_empty() {
-                    cover = fresh_video.video.cover.clone();
+                    cover = refreshed_video.video.cover.clone();
                 }
                 if media_urls.is_empty() {
-                    media_urls = download_media_items_from_video(&fresh_video);
-                    media_type = fresh_video.media_type.clone();
+                    media_urls = download_media_items_from_video(&refreshed_video);
+                    media_type = refreshed_video.media_type.clone();
                 }
+                fresh_video = Some(refreshed_video);
             }
         }
     }
 
-    if media_urls.is_empty() {
+    if media_urls.is_empty() && !(should_refresh_video_media && fresh_video.is_some()) {
         log::warn!(
             "download_video has no media urls after normalization: aweme_id={} desc={} author={} raw_media_type={}",
             aweme_id,
@@ -1301,19 +1307,39 @@ async fn download_video(
         }
     };
 
-    let task_id = match downloader
-        .add_media_task(
-            aweme_id.clone(),
-            desc.clone(),
-            author_name.clone(),
-            String::new(),
-            cover,
-            media_type,
-            media_urls,
-            None,
-        )
-        .await
-    {
+    let task_result = if should_refresh_video_media {
+        if let Some(fresh_video) = fresh_video.as_ref() {
+            downloader.add_task(fresh_video, None).await
+        } else {
+            downloader
+                .add_media_task(
+                    aweme_id.clone(),
+                    desc.clone(),
+                    author_name.clone(),
+                    String::new(),
+                    cover,
+                    media_type,
+                    media_urls,
+                    None,
+                )
+                .await
+        }
+    } else {
+        downloader
+            .add_media_task(
+                aweme_id.clone(),
+                desc.clone(),
+                author_name.clone(),
+                String::new(),
+                cover,
+                media_type,
+                media_urls,
+                None,
+            )
+            .await
+    };
+
+    let task_id = match task_result {
         Ok(task_id) => task_id,
         Err(e) => {
             return Ok(serde_json::json!({
@@ -1597,17 +1623,90 @@ async fn download_liked_authors(
 #[tauri::command]
 async fn add_download_task(
     state: State<'_, AppState>,
-    video: VideoInfo,
+    video: serde_json::Value,
     save_path: Option<String>,
 ) -> Result<String, String> {
+    let raw_media_type = download_media_type_from_payload(&video);
+    let should_refresh_video_media =
+        raw_media_type == MEDIA_TYPE_VIDEO || raw_media_type == "unknown";
+    let aweme_id = video
+        .get("aweme_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let path = save_path.map(std::path::PathBuf::from);
+    let mut fresh_video: Option<VideoInfo> = None;
+
+    if should_refresh_video_media && !aweme_id.is_empty() {
+        if let Ok(client) = get_client(&state).await {
+            if let Ok(refreshed_video) = client.get_video_detail(&aweme_id).await {
+                fresh_video = Some(refreshed_video);
+            }
+        }
+    }
+
     let downloader_guard = state.downloader.lock().await;
     let downloader = downloader_guard
         .as_ref()
         .ok_or("Downloader not initialized")?;
 
-    let path = save_path.map(std::path::PathBuf::from);
+    if let Some(fresh_video) = fresh_video.as_ref() {
+        return downloader
+            .add_task(fresh_video, path)
+            .await
+            .map_err(|e| e.to_string());
+    }
+
+    if let Ok(video_info) = serde_json::from_value::<VideoInfo>(video.clone()) {
+        return downloader
+            .add_task(&video_info, path)
+            .await
+            .map_err(|e| e.to_string());
+    }
+
+    let media_urls = parse_download_media_items(&video, &raw_media_type);
+    if media_urls.is_empty() {
+        return Err("没有可用的媒体URL".to_string());
+    }
+    let media_type = media_type_from_payload_or_items(&raw_media_type, &media_urls);
+    let desc = video
+        .get("desc")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let author_name = video
+        .get("author")
+        .and_then(|value| value.get("nickname"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("未知作者")
+        .trim()
+        .to_string();
+    let cover = video
+        .get("cover_url")
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            video
+                .get("video")
+                .and_then(|value| value.get("cover"))
+                .and_then(|value| value.as_str())
+        })
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
     downloader
-        .add_task(&video, path)
+        .add_media_task(
+            aweme_id,
+            desc,
+            author_name,
+            String::new(),
+            cover,
+            media_type,
+            media_urls,
+            path,
+        )
         .await
         .map_err(|e| e.to_string())
 }

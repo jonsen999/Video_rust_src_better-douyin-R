@@ -36,6 +36,22 @@ impl DownloadQuality {
     }
 }
 
+fn bit_rate_metric(bit_rate: &crate::api::types::BitRateInfo) -> i64 {
+    if bit_rate.data_size > 0 {
+        return bit_rate.data_size;
+    }
+    if bit_rate.bit_rate > 0 {
+        return bit_rate.bit_rate;
+    }
+    if bit_rate.quality_type > 0 {
+        return bit_rate.quality_type as i64;
+    }
+    if bit_rate.width > 0 && bit_rate.height > 0 {
+        return bit_rate.width as i64 * bit_rate.height as i64;
+    }
+    0
+}
+
 #[derive(Debug, Clone)]
 struct VideoCandidate {
     url: String,
@@ -1979,33 +1995,22 @@ fn collect_video_candidates(video: &VideoInfo) -> Vec<VideoCandidate> {
         });
     };
 
-    push_candidate(
-        video.video.download_addr.clone(),
-        i64::MAX,
-        false,
-        true,
-        false,
-    );
-    push_candidate(
-        video.video.play_addr_h264.clone(),
-        i64::MAX - 1,
-        true,
-        false,
-        false,
-    );
+    push_candidate(video.video.download_addr.clone(), 0, false, true, false);
+    push_candidate(video.video.play_addr_h264.clone(), 0, true, false, false);
     push_candidate(video.video.play_addr_lowbr.clone(), 1, true, false, true);
 
     if let Some(bit_rates) = &video.video.bit_rate {
         for bit_rate in bit_rates {
-            let metric = if bit_rate.data_size > 0 {
-                bit_rate.data_size
-            } else if bit_rate.bit_rate > 0 {
-                bit_rate.bit_rate
-            } else {
-                0
-            };
+            let metric = bit_rate_metric(bit_rate);
+            let h264_metric = if metric > 0 { metric + 1 } else { 0 };
 
-            push_candidate(bit_rate.play_addr_h264.clone(), metric, true, false, false);
+            push_candidate(
+                bit_rate.play_addr_h264.clone(),
+                h264_metric,
+                true,
+                false,
+                false,
+            );
             push_candidate(
                 bit_rate.play_addr.clone(),
                 metric,
@@ -2178,9 +2183,12 @@ fn select_video_url(video: &VideoInfo, quality: DownloadQuality) -> Option<Strin
     let download_addr = candidates.iter().find(|c| c.is_download_addr);
     let h264_best = candidates
         .iter()
-        .filter(|c| c.is_h264)
+        .filter(|c| c.is_h264 && !c.is_lowbr)
         .max_by_key(|c| c.metric);
-    let highest_metric = candidates.iter().max_by_key(|c| c.metric);
+    let highest_metric = candidates
+        .iter()
+        .filter(|c| c.metric > 0 && !c.is_download_addr && !c.is_lowbr)
+        .max_by_key(|c| c.metric);
     let lowbr = candidates.iter().find(|c| c.is_lowbr);
     let smallest_metric = candidates
         .iter()
@@ -2190,10 +2198,78 @@ fn select_video_url(video: &VideoInfo, quality: DownloadQuality) -> Option<Strin
 
     let selected = match quality {
         DownloadQuality::Auto => download_addr.or(h264_best).or(highest_metric).or(first),
-        DownloadQuality::Highest => download_addr.or(highest_metric).or(first),
+        DownloadQuality::Highest => highest_metric.or(download_addr).or(h264_best).or(first),
         DownloadQuality::H264 => h264_best.or(download_addr).or(highest_metric).or(first),
         DownloadQuality::Smallest => lowbr.or(smallest_metric).or(h264_best).or(first),
     };
 
     selected.map(|c| c.url.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::types::BitRateInfo;
+
+    fn video_with_quality_candidates() -> VideoInfo {
+        let mut video = VideoInfo::default();
+        video.video.play_addr = "play-default".to_string();
+        video.video.download_addr = Some("download-default".to_string());
+        video.video.play_addr_h264 = Some("top-h264".to_string());
+        video.video.play_addr_lowbr = Some("lowbr".to_string());
+        video.video.bit_rate = Some(vec![
+            BitRateInfo {
+                data_size: 100,
+                bit_rate: 100,
+                play_addr: Some("bitrate-small".to_string()),
+                play_addr_h264: Some("bitrate-small-h264".to_string()),
+                ..Default::default()
+            },
+            BitRateInfo {
+                data_size: 500,
+                bit_rate: 500,
+                play_addr: Some("bitrate-high".to_string()),
+                play_addr_h264: Some("bitrate-high-h264".to_string()),
+                ..Default::default()
+            },
+        ]);
+        video
+    }
+
+    #[test]
+    fn auto_keeps_download_addr_preference() {
+        let video = video_with_quality_candidates();
+        assert_eq!(
+            select_video_url(&video, DownloadQuality::Auto).as_deref(),
+            Some("download-default")
+        );
+    }
+
+    #[test]
+    fn highest_prefers_measured_quality_candidate() {
+        let video = video_with_quality_candidates();
+        let selected = select_video_url(&video, DownloadQuality::Highest);
+        assert!(matches!(
+            selected.as_deref(),
+            Some("bitrate-high" | "bitrate-high-h264")
+        ));
+    }
+
+    #[test]
+    fn h264_prefers_best_h264_candidate() {
+        let video = video_with_quality_candidates();
+        assert_eq!(
+            select_video_url(&video, DownloadQuality::H264).as_deref(),
+            Some("bitrate-high-h264")
+        );
+    }
+
+    #[test]
+    fn smallest_prefers_lowbr_candidate() {
+        let video = video_with_quality_candidates();
+        assert_eq!(
+            select_video_url(&video, DownloadQuality::Smallest).as_deref(),
+            Some("lowbr")
+        );
+    }
 }
