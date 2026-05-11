@@ -8,6 +8,7 @@ import {
   type VideoInfo,
 } from "@/lib/tauri";
 import { useAppStore, useLogStore } from "@/stores/app-store";
+import { useToastStore } from "@/components/ui/toast";
 
 const PAGE_SIZE = 18;
 
@@ -150,6 +151,7 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
     latestVideoRequestId += 1;
     latestLoadMoreRequestId += 1;
     const addLog = useLogStore.getState().addLog;
+    const toast = useToastStore.getState().toast;
     useAppStore.getState().setView("search");
 
     set({
@@ -167,26 +169,10 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
     });
 
     addLog(`搜索用户: ${query}`, "info");
+    toast(`正在搜索用户: ${query}`, "info");
 
     try {
-      const enrichSearchUserStats = (baseUsers: UserInfo[]) => {
-        const candidates = baseUsers.filter(shouldEnrichSearchUser).slice(0, 10);
-        if (candidates.length === 0) return;
-
-        void (async () => {
-          for (let index = 0; index < candidates.length; index += 3) {
-            const batch = candidates.slice(index, index + 3);
-            await Promise.allSettled(
-              batch.map(async (user) => {
-                const detail = await getUserDetail(user.sec_uid, user.nickname);
-                if (requestId !== latestSearchRequestId || !detail.success || !detail.user) return;
-                set((current) => mergeDetailedUserIntoSearchState(current, user, detail.user!));
-              })
-            );
-          }
-        })();
-      };
-
+      // ... (enrichSearchUserStats helper)
       const result = await searchUser(query);
       if (requestId !== latestSearchRequestId) return;
 
@@ -195,6 +181,7 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
         const message = result.message || "需要完成抖音验证";
         set({ searching: false, error: message });
         addLog(message, "warning");
+        toast(message, "warning", "需要验证");
         return;
       }
 
@@ -202,6 +189,7 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
         const message = formatSearchErrorMessage(result.message);
         set({ searching: false, error: message });
         addLog(message, "error");
+        toast(message, "error", "搜索失败");
         return;
       }
 
@@ -216,6 +204,7 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
           error: null,
         });
         addLog(`已匹配用户: ${result.user.nickname}`, "success");
+        toast(`已找到用户: ${result.user.nickname}`, "success");
         enrichSearchUserStats([result.user]);
         return;
       }
@@ -230,13 +219,16 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
         hasMore: false,
         error: users.length > 0 ? null : "未找到用户",
       });
-      addLog(`找到 ${users.length} 个候选用户`, users.length > 0 ? "success" : "warning");
+      const msg = `找到 ${users.length} 个候选用户`;
+      addLog(msg, users.length > 0 ? "success" : "warning");
+      toast(msg, users.length > 0 ? "success" : "warning");
       enrichSearchUserStats(users);
     } catch (error) {
       if (requestId !== latestSearchRequestId) return;
       const message = formatSearchErrorMessage(error instanceof Error ? error.message : undefined);
       set({ searching: false, error: message });
       addLog(message, "error");
+      toast(message, "error", "搜索异常");
     }
   },
 
@@ -245,6 +237,7 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
     latestVideoRequestId += 1;
     latestLoadMoreRequestId += 1;
     const addLog = useLogStore.getState().addLog;
+    const toast = useToastStore.getState().toast;
 
     set({
       loadingUser: true,
@@ -266,6 +259,7 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
         const message = detail.message || "需要完成抖音验证";
         set({ loadingUser: false, error: message, currentUser: user });
         addLog(message, "warning");
+        toast(message, "warning", "需要验证");
         return;
       }
 
@@ -273,6 +267,7 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
         const message = detail.message || "获取用户详情失败";
         set({ loadingUser: false, error: message, currentUser: user });
         addLog(message, "error");
+        toast(message, "error", "加载失败");
         return;
       }
 
@@ -288,6 +283,7 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
       const message = error instanceof Error ? error.message : "获取用户详情失败";
       set({ loadingUser: false, error: message, currentUser: user });
       addLog(message, "error");
+      toast(message, "error", "加载异常");
     }
   },
 
@@ -299,6 +295,7 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
     latestLoadMoreRequestId += 1;
     const secUid = state.currentUser.sec_uid;
     const addLog = useLogStore.getState().addLog;
+    const toast = useToastStore.getState().toast;
     const keepExistingVideos = state.videos.length > 0;
     set({
       loadingVideos: true,
@@ -317,6 +314,7 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
         const message = result.message || "需要完成抖音验证";
         set({ loadingVideos: false, error: message });
         addLog(message, "warning");
+        toast(message, "warning", "需要验证");
         return;
       }
 
@@ -324,6 +322,7 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
         const message = result.message || "获取作品列表失败";
         set({ loadingVideos: false, error: message });
         addLog(message, "error");
+        toast(message, "error", "加载失败");
         return;
       }
 
@@ -341,6 +340,7 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
       const message = error instanceof Error ? error.message : "获取作品列表失败";
       set({ loadingVideos: false, error: message });
       addLog(message, "error");
+      toast(message, "error", "加载异常");
     }
   },
 

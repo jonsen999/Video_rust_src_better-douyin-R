@@ -1,15 +1,16 @@
 import { useEffect, useRef } from "react";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { Toaster } from "@/components/ui/toast";
+import { Toaster, useToast } from "@/components/ui/toast";
 import { AppShell } from "@/components/layout/app-shell";
 import { useAppStore, useLogStore } from "@/stores/app-store";
 import { useSocket } from "@/lib/socket";
 import { useKeyboard } from "@/hooks/use-keyboard";
-import { getConfig, initClient, verifyCookie } from "@/lib/tauri";
+import { checkUpdate, getConfig, initClient, verifyCookie } from "@/lib/tauri";
 import { useRecommendedStore } from "@/stores/recommended-store";
 
 export default function App() {
   const setCookieLoggedIn = useAppStore((s) => s.setCookieLoggedIn);
+  const { toast } = useToast();
   const lastCookieInvalidLogAt = useRef(0);
 
   useEffect(() => {
@@ -22,12 +23,13 @@ export default function App() {
       if (now - lastCookieInvalidLogAt.current > 3000) {
         lastCookieInvalidLogAt.current = now;
         useLogStore.getState().addLog(message, "warning");
+        toast(message, "warning", "登录失效");
       }
     };
 
     window.addEventListener("dy-cookie-invalid", handleCookieInvalid);
     return () => window.removeEventListener("dy-cookie-invalid", handleCookieInvalid);
-  }, [setCookieLoggedIn]);
+  }, [setCookieLoggedIn, toast]);
 
   useEffect(() => {
     let disposed = false;
@@ -42,6 +44,21 @@ export default function App() {
             .getState()
             .addLog(error instanceof Error ? error.message : "初始化客户端失败", "error");
         }
+      }
+
+      // Check for updates
+      try {
+        const update = await checkUpdate();
+        if (!disposed && update.has_update) {
+          toast(
+            `发现新版本 v${update.version}，请前往设置或 GitHub 下载更新。`,
+            "info",
+            "有新版本可用"
+          );
+          useLogStore.getState().addLog(`发现新版本: ${update.version}`, "info");
+        }
+      } catch {
+        // Silent fail for update check
       }
 
       try {
@@ -88,7 +105,7 @@ export default function App() {
         window.clearTimeout(prefetchTimer);
       }
     };
-  }, [setCookieLoggedIn]);
+  }, [setCookieLoggedIn, toast]);
 
   useSocket();
   useKeyboard();
