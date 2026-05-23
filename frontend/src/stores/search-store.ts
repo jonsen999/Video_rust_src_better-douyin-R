@@ -4,6 +4,7 @@ import {
   getUserVideos,
   openVerifyBrowser,
   searchUser,
+  verifyCookie,
   type UserInfo,
   type VideoInfo,
 } from "@/lib/tauri";
@@ -86,9 +87,10 @@ function mergeUserInfo(base: UserInfo, incoming: UserInfo): UserInfo {
     next && next.trim() ? next : previous || "";
   const keepNumber = (next: number | undefined, previous: number | undefined) =>
     next && next > 0 ? next : previous || 0;
-  const uniqueId = incoming.unique_id && incoming.unique_id !== incoming.sec_uid
-    ? incoming.unique_id
-    : base.unique_id;
+  const uniqueId =
+    incoming.unique_id && incoming.unique_id !== incoming.sec_uid
+      ? incoming.unique_id
+      : base.unique_id;
 
   return {
     ...base,
@@ -298,6 +300,7 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
       toast(msg, users.length > 0 ? "success" : "warning");
       enrichSearchUserStats(users);
     } catch (error) {
+      useToastStore.getState().dismiss(loadingToastId);
       if (requestId !== latestSearchRequestId) return;
       const message = formatSearchErrorMessage(error instanceof Error ? error.message : undefined);
       set({ searching: false, error: message, pendingVerifySearch: null });
@@ -314,6 +317,25 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
   resumeVerifySearch: async () => {
     const pending = get().pendingVerifySearch;
     if (!pending || get().searching) return;
+
+    try {
+      const status = await verifyCookie();
+      if (!status.valid) {
+        if (status.need_verify) {
+          const message = status.message || "验证尚未完成，请完成后重试";
+          useLogStore.getState().addLog(message, "warning");
+          useToastStore.getState().toast(message, "warning", "需要验证");
+          return;
+        }
+
+        const message = status.message || "Cookie 已失效，请重新登录";
+        window.dispatchEvent(new CustomEvent("dy-cookie-invalid", { detail: { message } }));
+        return;
+      }
+    } catch {
+      // 继续执行原有重试逻辑
+    }
+
     await get().search(pending.keyword);
   },
 
@@ -364,7 +386,7 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
         const message = detail.message || "获取用户详情失败";
         set({ loadingUser: false, error: message, currentUser: user });
         addLog(message, "error");
-        
+
         if (checkQuotaError(message)) {
           showQuotaAlert(message);
         } else {
@@ -387,7 +409,7 @@ export const useSearchStore = create<SearchStoreState>((set, get) => ({
       const message = error instanceof Error ? error.message : "获取用户详情失败";
       set({ loadingUser: false, error: message, currentUser: user });
       addLog(message, "error");
-      
+
       if (checkQuotaError(message)) {
         showQuotaAlert(message);
       } else {

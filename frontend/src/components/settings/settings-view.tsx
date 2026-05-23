@@ -122,6 +122,7 @@ export function SettingsView() {
   const [filenameTemplate, setFilenameTemplate] = useState("{title}_{aweme_id}");
   const [folderNameTemplate, setFolderNameTemplate] = useState("{author}");
   const [autoCreateFolder, setAutoCreateFolder] = useState(true);
+  const [choosingDirectory, setChoosingDirectory] = useState(false);
   const [savingFields, setSavingFields] = useState<SavingFields>({});
   const [savedFields, setSavedFields] = useState<SavingFields>({});
   const [failedFields, setFailedFields] = useState<SavingFields>({});
@@ -515,14 +516,24 @@ export function SettingsView() {
   };
 
   const handleChooseDirectory = async () => {
+    if (choosingDirectory || savingFields.download_path) {
+      return;
+    }
+    setChoosingDirectory(true);
     try {
       const path = await selectDirectory();
+      setChoosingDirectory(false);
       if (path) {
         setDownloadPath(path);
         await saveDownloadPath(path);
       }
     } catch (error) {
-      addLog(error instanceof Error ? error.message : "选择目录失败", "error");
+      const message = error instanceof Error ? error.message : "选择目录失败";
+      addLog(message, "error");
+      toast.error(message, "选择失败");
+      markFieldStatus("download_path", "error");
+    } finally {
+      setChoosingDirectory(false);
     }
   };
 
@@ -1046,15 +1057,15 @@ export function SettingsView() {
               variant="outline"
               size="sm"
               onClick={handleChooseDirectory}
-              disabled={savingFields.download_path}
+              disabled={choosingDirectory || savingFields.download_path}
               className="h-10 shrink-0 px-4"
             >
-              {savingFields.download_path ? (
+              {choosingDirectory || savingFields.download_path ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
               ) : (
                 <FolderOpen className="w-4 h-4" />
               )}
-              {savingFields.download_path ? "保存中" : "选择"}
+              {choosingDirectory ? "选择中" : savingFields.download_path ? "保存中" : "选择"}
             </Button>
           </div>
           <p className="text-[0.75rem] text-text-muted mt-2">

@@ -28,4 +28,3 @@ export const AmbientBackground = memo(function AmbientBackground() {
     </div>
   );
 });
-

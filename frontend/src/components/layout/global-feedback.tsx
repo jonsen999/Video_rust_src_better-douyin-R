@@ -55,14 +55,17 @@ export function GlobalAlert() {
             <DialogTitle className="text-[1.1rem] font-bold tracking-tight">
               {config.title}
             </DialogTitle>
-            <DialogDescription className="mt-2.5 text-[0.85rem] leading-relaxed text-text-secondary">
-              {config.description}
+            <DialogDescription asChild>
+              <div className="mt-2.5 text-[0.85rem] leading-relaxed text-text-secondary">
+                {config.description}
+              </div>
             </DialogDescription>
           </div>
         </DialogHeader>
         <DialogFooter className="mt-8 gap-2.5 sm:flex-row">
           {config.onCancel && (
             <Button
+              type="button"
               variant="outline"
               onClick={() => {
                 config.onCancel?.();
@@ -74,6 +77,7 @@ export function GlobalAlert() {
             </Button>
           )}
           <Button
+            type="button"
             variant={config.variant === "danger" ? "danger" : "default"}
             onClick={() => {
               config.onAction?.();
@@ -97,6 +101,9 @@ export function GlobalLoader() {
     <AnimatePresence>
       {isLoading && (
         <motion.div
+          role="status"
+          aria-live="polite"
+          aria-busy="true"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
