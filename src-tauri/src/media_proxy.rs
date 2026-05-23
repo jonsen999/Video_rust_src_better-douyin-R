@@ -84,17 +84,35 @@ fn allowed_request_origin(request_headers: &HeaderMap) -> Option<Option<HeaderVa
     let host = parsed.host_str()?.to_ascii_lowercase();
     let port = parsed.port_or_known_default();
 
-    let allowed = (scheme == "http"
-        && (host == "127.0.0.1" || host == "localhost")
-        && port == Some(MEDIA_PROXY_PORT))
-        || (scheme == "http" && host == "tauri.localhost")
-        || (scheme == "tauri" && host == "localhost");
+    let allowed =
+        (scheme == "http" && (host == "127.0.0.1" || host == "localhost") && port.is_some())
+            || (scheme == "http" && host == "tauri.localhost")
+            || (scheme == "tauri" && host == "localhost");
 
     if allowed {
         Some(Some(origin.clone()))
     } else {
         None
     }
+}
+
+fn apply_cors_headers(response_headers: &mut HeaderMap, allow_origin: Option<HeaderValue>) {
+    response_headers.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        allow_origin.unwrap_or_else(|| HeaderValue::from_static("*")),
+    );
+    response_headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, OPTIONS"),
+    );
+    response_headers.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("Range, Content-Type, Accept"),
+    );
+    response_headers.insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static("Content-Length, Content-Range, Accept-Ranges, Content-Type"),
+    );
 }
 
 fn build_error_response(status: StatusCode, message: &str) -> Response<Body> {
@@ -645,10 +663,7 @@ async fn media_proxy(
         response_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     }
 
-    response_headers.insert(
-        header::ACCESS_CONTROL_ALLOW_ORIGIN,
-        allow_origin.unwrap_or_else(|| HeaderValue::from_static("*")),
-    );
+    apply_cors_headers(response_headers, allow_origin);
     response_headers.insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("public, max-age=3600"),
@@ -671,6 +686,20 @@ async fn media_proxy(
         .unwrap_or_else(|_| build_error_response(StatusCode::BAD_GATEWAY, "Proxy error"))
 }
 
+async fn media_proxy_options(request_headers: HeaderMap) -> Response<Body> {
+    let allow_origin = match allowed_request_origin(&request_headers) {
+        Some(origin) => origin,
+        None => return build_error_response(StatusCode::FORBIDDEN, "Forbidden"),
+    };
+
+    let mut response = Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body(Body::empty())
+        .unwrap_or_else(|_| Response::new(Body::empty()));
+    apply_cors_headers(response.headers_mut(), allow_origin);
+    response
+}
+
 pub async fn spawn_media_proxy(state: AppState) -> anyhow::Result<()> {
     let addr = SocketAddr::from(([127, 0, 0, 1], MEDIA_PROXY_PORT));
     let listener = TcpListener::bind(addr).await?;
@@ -684,7 +713,10 @@ pub async fn spawn_media_proxy(state: AppState) -> anyhow::Result<()> {
 
     tokio::spawn(async move {
         let app = Router::new()
-            .route("/api/media/proxy", get(media_proxy))
+            .route(
+                "/api/media/proxy",
+                get(media_proxy).options(media_proxy_options),
+            )
             .route("/api/local-media", get(local_media))
             .fallback_service(ServeDir::new(dist_dir).append_index_html_on_directories(true))
             .with_state(state);

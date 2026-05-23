@@ -12,14 +12,23 @@ pub const MEDIA_TYPE_LIVE_PHOTO: &str = "live_photo";
 pub const MEDIA_TYPE_MIXED: &str = "mixed";
 pub const MEDIA_TYPE_AUDIO: &str = "audio";
 
-pub fn normalize_duration_seconds(value: i64) -> i64 {
+pub fn normalize_video_duration_seconds(value: i64) -> i64 {
     if value <= 0 {
         return 0;
     }
 
-    if value >= 100_000 {
-        return std::cmp::max(1, (value as f64 / 100_000.0).round() as i64);
+    if value >= 1_000 {
+        return std::cmp::max(1, (value as f64 / 1_000.0).round() as i64);
     }
+
+    std::cmp::max(1, value)
+}
+
+pub fn normalize_music_duration_seconds(value: i64) -> i64 {
+    if value <= 0 {
+        return 0;
+    }
+
     if value >= 1_000 {
         return std::cmp::max(1, (value as f64 / 1_000.0).round() as i64);
     }
@@ -109,7 +118,17 @@ pub fn python_music_info(video: &VideoInfo) -> serde_json::Value {
         "title": video.music.as_ref().map(|music| music.title.clone()).unwrap_or_default(),
         "author": video.music.as_ref().map(|music| music.author.clone()).unwrap_or_default(),
         "play_url": play_url,
-        "duration": normalize_duration_seconds(video.music.as_ref().map(|music| music.duration).unwrap_or(0)),
+        "duration": normalize_music_duration_seconds(video.music.as_ref().map(|music| music.duration).unwrap_or(0)),
+    })
+}
+
+pub fn python_status_value(video: &VideoInfo) -> serde_json::Value {
+    serde_json::json!({
+        "is_delete": video.status.is_delete,
+        "private_status": video.status.private_status,
+        "review_status": video.status.review_status,
+        "with_goods": video.status.with_goods,
+        "is_prohibited": video.status.is_prohibited,
     })
 }
 
@@ -150,6 +169,7 @@ pub fn python_video_summary(
         "share_count": video.statistics.share_count,
         "cover_url": python_cover_url(video),
         "media_type": media_type,
+        "status": python_status_value(video),
         "media_urls": media_urls,
         "bgm_url": bgm_url,
         "author": {
@@ -160,7 +180,9 @@ pub fn python_video_summary(
     });
 
     if include_duration {
-        value["duration"] = serde_json::json!(normalize_duration_seconds(video.video.duration));
+        value["duration"] =
+            serde_json::json!(normalize_video_duration_seconds(video.video.duration));
+        value["duration_unit"] = serde_json::json!("seconds");
     }
 
     if include_music {
@@ -183,7 +205,8 @@ pub fn python_video_summary(
         "download_addr": video.video.download_addr,
         "width": video.video.width,
         "height": video.video.height,
-        "duration": normalize_duration_seconds(video.video.duration),
+        "duration": normalize_video_duration_seconds(video.video.duration),
+        "duration_unit": "seconds",
         "ratio": video.video.ratio,
         "bit_rate": video.video.bit_rate,
     });
@@ -214,6 +237,7 @@ pub fn python_video_detail_value(video: &VideoInfo) -> serde_json::Value {
             "share_count": video.statistics.share_count,
             "play_count": video.statistics.play_count,
         },
+        "status": python_status_value(video),
         "media_type": media_type,
         "media_urls": media_urls.clone(),
         "raw_media_type": media_type,
@@ -232,7 +256,8 @@ pub fn python_video_detail_value(video: &VideoInfo) -> serde_json::Value {
             "download_addr": video.video.download_addr,
             "width": video.video.width,
             "height": video.video.height,
-            "duration": normalize_duration_seconds(video.video.duration),
+            "duration": normalize_video_duration_seconds(video.video.duration),
+            "duration_unit": "seconds",
             "ratio": video.video.ratio,
             "bit_rate": video.video.bit_rate,
         },
@@ -257,6 +282,7 @@ pub fn python_recommended_video(video: &VideoInfo) -> serde_json::Value {
         "has_live_photo": video.has_live_photo,
         "is_image": video.is_image,
         "raw_media_type": media_type,
+        "status": python_status_value(video),
         "author": {
             "uid": video.author.uid,
             "nickname": video.author.nickname,
@@ -280,7 +306,8 @@ pub fn python_recommended_video(video: &VideoInfo) -> serde_json::Value {
             "download_addr": video.video.download_addr,
             "width": video.video.width,
             "height": video.video.height,
-            "duration": normalize_duration_seconds(video.video.duration),
+            "duration": normalize_video_duration_seconds(video.video.duration),
+            "duration_unit": "seconds",
             "ratio": video.video.ratio,
             "bit_rate": video.video.bit_rate,
         },
@@ -617,13 +644,22 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_duration_seconds() {
-        assert_eq!(normalize_duration_seconds(0), 0);
-        assert_eq!(normalize_duration_seconds(-5), 0);
-        assert_eq!(normalize_duration_seconds(50), 50);
-        assert_eq!(normalize_duration_seconds(500), 5); // /100
-        assert_eq!(normalize_duration_seconds(5_000), 5); // /1000
-        assert_eq!(normalize_duration_seconds(500_000), 5); // /100000
+    fn normalizes_video_duration_seconds() {
+        assert_eq!(normalize_video_duration_seconds(0), 0);
+        assert_eq!(normalize_video_duration_seconds(-5), 0);
+        assert_eq!(normalize_video_duration_seconds(50), 50);
+        assert_eq!(normalize_video_duration_seconds(500), 500);
+        assert_eq!(normalize_video_duration_seconds(5_000), 5);
+        assert_eq!(normalize_video_duration_seconds(500_000), 500);
+    }
+
+    #[test]
+    fn normalizes_music_duration_seconds() {
+        assert_eq!(normalize_music_duration_seconds(0), 0);
+        assert_eq!(normalize_music_duration_seconds(-5), 0);
+        assert_eq!(normalize_music_duration_seconds(50), 50);
+        assert_eq!(normalize_music_duration_seconds(500), 5);
+        assert_eq!(normalize_music_duration_seconds(5_000), 5);
     }
 
     #[test]
