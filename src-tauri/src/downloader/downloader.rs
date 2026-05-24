@@ -522,7 +522,7 @@ impl Downloader {
                     ((index as f32 + file_progress / 100.0) / media_count as f32) * 100.0;
                 let speed_bps = (file_downloaded_size as f64 / elapsed) as u64;
                 let eta_seconds = if response_size > 0 && speed_bps > 0 {
-                    Some((response_size.saturating_sub(file_downloaded_size) / speed_bps) as u64)
+                    Some(response_size.saturating_sub(file_downloaded_size) / speed_bps)
                 } else {
                     None
                 };
@@ -2728,10 +2728,7 @@ fn ordered_video_urls(video: &VideoInfo, quality: DownloadQuality) -> Vec<String
         }
     }
 
-    let mut rest = clean_candidates
-        .iter()
-        .copied()
-        .collect::<Vec<&VideoCandidate>>();
+    let mut rest = clean_candidates.to_vec();
     rest.sort_by_key(|candidate| std::cmp::Reverse(candidate.metric));
     for candidate in rest {
         push(Some(candidate));
