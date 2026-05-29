@@ -455,6 +455,61 @@ impl DouyinClient {
 
     /// 获取视频详情
     pub async fn get_video_detail(&self, aweme_id: &str) -> Result<VideoInfo> {
+        let primary_result = self.get_single_video_detail(aweme_id).await;
+        let mut video_info = match primary_result {
+            Ok(video_info) => video_info,
+            Err(primary_error) => {
+                log::warn!(
+                    "single video detail request failed, trying multi detail fallback: aweme_id={} error={}",
+                    aweme_id,
+                    primary_error
+                );
+                return self
+                    .get_multi_video_detail(aweme_id)
+                    .await
+                    .map_err(|fallback_error| {
+                        anyhow!(
+                            "{}; fallback multi detail failed: {}",
+                            primary_error,
+                            fallback_error
+                        )
+                    });
+            }
+        };
+
+        if !Self::video_info_has_media(&video_info) {
+            match self.get_multi_video_detail(aweme_id).await {
+                Ok(fallback) if Self::video_info_has_media(&fallback) => {
+                    log::info!(
+                        "using multi detail fallback because single detail had no media: aweme_id={}",
+                        aweme_id
+                    );
+                    video_info = fallback;
+                }
+                Ok(_) => {
+                    log::warn!(
+                        "multi detail fallback also had no media: aweme_id={}",
+                        aweme_id
+                    );
+                }
+                Err(error) => {
+                    log::warn!(
+                        "multi detail fallback failed after empty single detail: aweme_id={} error={}",
+                        aweme_id,
+                        error
+                    );
+                }
+            }
+        }
+
+        if video_info.aweme_id.trim().is_empty() {
+            video_info.aweme_id = aweme_id.to_string();
+        }
+
+        Ok(video_info)
+    }
+
+    async fn get_single_video_detail(&self, aweme_id: &str) -> Result<VideoInfo> {
         let mut params = HashMap::new();
         params.insert("aweme_id", aweme_id.to_string());
         params.insert("aid", "1128".to_string());
@@ -505,6 +560,76 @@ impl DouyinClient {
         }
 
         Ok(video_info)
+    }
+
+    async fn get_multi_video_detail(&self, aweme_id: &str) -> Result<VideoInfo> {
+        let normalized_aweme_id = aweme_id.trim();
+        if normalized_aweme_id.is_empty() {
+            return Err(anyhow!("aweme_id is empty"));
+        }
+
+        let mut params = HashMap::new();
+        params.insert("aweme_ids", format!("[{}]", normalized_aweme_id));
+        params.insert("request_source", "200".to_string());
+
+        let response = self
+            .request_raw_json_with_options(
+                "https://www.douyin.com/aweme/v1/web/multi/aweme/detail/",
+                Some(params),
+                "GET",
+                None,
+                true,
+            )
+            .await?;
+
+        let status_code = response["status_code"].as_i64().unwrap_or(-1);
+        if status_code != 0 {
+            let status_msg = response["status_msg"].as_str().unwrap_or("unknown error");
+            return Err(anyhow!("API error: {}", status_msg));
+        }
+
+        let data = response
+            .get("aweme_details")
+            .and_then(|value| value.as_array())
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|item| item["aweme_id"].as_str() == Some(normalized_aweme_id))
+                    .or_else(|| items.first())
+            })
+            .ok_or_else(|| anyhow!("No aweme_details in response"))?;
+
+        let mut video_info = self.parse_video_info(data)?;
+        if video_info.aweme_id.trim().is_empty() {
+            video_info.aweme_id = normalized_aweme_id.to_string();
+        }
+        Ok(video_info)
+    }
+
+    fn video_info_has_media(video_info: &VideoInfo) -> bool {
+        video_info
+            .image_urls
+            .as_ref()
+            .map(|urls| urls.iter().any(|url| !url.trim().is_empty()))
+            .unwrap_or(false)
+            || video_info
+                .live_photo_urls
+                .as_ref()
+                .map(|urls| urls.iter().any(|url| !url.trim().is_empty()))
+                .unwrap_or(false)
+            || !video_info.video.play_addr.trim().is_empty()
+            || video_info
+                .video
+                .download_addr
+                .as_ref()
+                .map(|url| !url.trim().is_empty())
+                .unwrap_or(false)
+            || video_info
+                .video
+                .dash_addr
+                .as_ref()
+                .map(|url| !url.trim().is_empty())
+                .unwrap_or(false)
     }
 
     /// 解析视频信息
@@ -657,7 +782,9 @@ impl DouyinClient {
                     .and_then(|value| value.as_str())
                 {
                     live_photo_urls_list.push(url.to_string());
-                } else if let Some(url) = image
+                }
+
+                if let Some(url) = image
                     .get("url_list")
                     .and_then(|value| value.as_array())
                     .and_then(|urls| urls.last())
@@ -2208,6 +2335,10 @@ mod tests {
             Some("7341234567890123456".to_string())
         );
         assert_eq!(
+            DouyinClient::extract_aweme_id("https://www.douyin.com/note/7341234567890123456"),
+            Some("7341234567890123456".to_string())
+        );
+        assert_eq!(
             DouyinClient::extract_aweme_id("https://www.douyin.com/?modal_id=7341234567890123456"),
             Some("7341234567890123456".to_string())
         );
@@ -2251,6 +2382,41 @@ mod tests {
         assert_eq!(
             client.select_configured_video_url(&video).as_deref(),
             Some("https://example.com/low.mp4")
+        );
+    }
+
+    #[test]
+    fn image_post_collects_live_photo_and_static_image_urls() {
+        let client = DouyinClient::new(AppConfig::default()).expect("client");
+        let post = json!({
+            "aweme_id": "7341234567890123456",
+            "desc": "mixed image post",
+            "author": {},
+            "statistics": {},
+            "status": {},
+            "video": {},
+            "images": [{
+                "url_list": [
+                    "https://example.com/image-small.webp",
+                    "https://example.com/image-large.jpeg"
+                ],
+                "video": {
+                    "play_addr": {
+                        "url_list": ["https://example.com/live-photo.mp4"]
+                    }
+                }
+            }]
+        });
+
+        let video = client.parse_video_info(&post).expect("video info");
+
+        assert_eq!(
+            video.live_photo_urls.as_ref().expect("live photos"),
+            &vec!["https://example.com/live-photo.mp4".to_string()]
+        );
+        assert_eq!(
+            video.image_urls.as_ref().expect("images"),
+            &vec!["https://example.com/image-large.jpeg".to_string()]
         );
     }
 }
