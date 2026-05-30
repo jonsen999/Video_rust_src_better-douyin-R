@@ -29,6 +29,45 @@ use tauri::{Emitter, Manager, State};
 use tokio::sync::{mpsc, Mutex};
 use url::Url;
 
+const DOUYIN_LOGIN_COOKIE_NAMES: &[&str] = &[
+    "sessionid",
+    "sessionid_ss",
+    "sid_guard",
+    "uid_tt",
+    "uid_tt_ss",
+    "sid_tt",
+    "sid_ucp_v1",
+    "ssid_ucp_v1",
+    "session_tlb_tag",
+    "passport_auth_status",
+    "passport_auth_status_ss",
+    "passport_mfa_token",
+    "d_ticket",
+    "n_mh",
+    "odin_tt",
+    "_bd_ticket_crypt_cookie",
+];
+
+const DOUYIN_COOKIE_CLEAR_DOMAINS: &[&str] = &[
+    ".douyin.com",
+    "www.douyin.com",
+    "sso.douyin.com",
+    "login.douyin.com",
+];
+
+fn clear_douyin_login_cookies(window: &tauri::WebviewWindow) {
+    for domain in DOUYIN_COOKIE_CLEAR_DOMAINS {
+        for name in DOUYIN_LOGIN_COOKIE_NAMES {
+            if let Ok(cookie) = tauri::webview::Cookie::parse(format!(
+                "{}=; Domain={}; Path=/; Max-Age=0",
+                name, domain
+            )) {
+                let _ = window.set_cookie(cookie.into_owned());
+            }
+        }
+    }
+}
+
 /// 应用状态
 #[derive(Clone)]
 pub struct AppState {
@@ -421,10 +460,7 @@ async fn cookie_browser_login(
     .build()
     .map_err(|error| format!("无法打开登录窗口: {}", error))?;
 
-    let existing_cookie = state.config.lock().await.cookie.clone();
-    for cookie in parse_cookie_string(&existing_cookie) {
-        let _ = window.set_cookie(cookie);
-    }
+    clear_douyin_login_cookies(&window);
     let _ = window.navigate(login_url.clone());
 
     emit_cookie_login_status(
