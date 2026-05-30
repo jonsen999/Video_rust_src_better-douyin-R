@@ -833,18 +833,6 @@ async fn cookie_browser_login(
                             current_user.uid,
                             current_user.nickname
                         );
-                        if !relation_signer_ready(&relation_signer) {
-                            emit_cookie_login_status(
-                                &app,
-                                serde_json::json!({
-                                    "event": "pending",
-                                    "message": "登录态已通过，正在采集点赞安全参数"
-                                }),
-                            )
-                            .await;
-                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                            continue;
-                        }
                         let mut next_config = config_state.lock().await.clone();
                         next_config.cookie = cookie_string.clone();
                         next_config.relation_signer = relation_signer;
@@ -865,7 +853,8 @@ async fn cookie_browser_login(
                             *client_state.lock().await = Some(client);
                         }
                         if let Some(downloader) = downloader_state.lock().await.as_mut() {
-                            if let Err(error) = downloader.update_config(next_config) {
+                            let downloader_config = next_config.clone();
+                            if let Err(error) = downloader.update_config(downloader_config) {
                                 log::warn!(
                                     "Failed to update downloader config after cookie login: {}",
                                     error
@@ -879,7 +868,11 @@ async fn cookie_browser_login(
                             &app,
                             serde_json::json!({
                                 "event": "success",
-                                "message": format!("Cookie 获取成功！已登录为 {}", current_user.nickname),
+                                "message": if relation_signer_ready(&next_config.relation_signer) {
+                                    format!("Cookie 获取成功！已登录为 {}", current_user.nickname)
+                                } else {
+                                    format!("Cookie 获取成功！已登录为 {}，点赞安全参数未采集完整", current_user.nickname)
+                                },
                                 "cookie_set": true
                             }),
                         )
