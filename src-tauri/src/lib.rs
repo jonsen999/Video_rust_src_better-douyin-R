@@ -502,10 +502,10 @@ async fn cookie_browser_login(
                             cookie
                                 .domain()
                                 .map(|domain| {
-                                    domain.contains("douyin.com")
-                                        || domain.contains("amemv.com")
-                                        || domain.contains("bytedance.com")
-                                        || domain.contains("snssdk.com")
+                                    let domain =
+                                        domain.trim().trim_start_matches('.').to_ascii_lowercase();
+                                    "www.douyin.com" == domain
+                                        || "www.douyin.com".ends_with(&format!(".{}", domain))
                                 })
                                 .unwrap_or_else(|| {
                                     matches!(

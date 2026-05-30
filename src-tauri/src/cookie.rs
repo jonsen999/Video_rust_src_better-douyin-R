@@ -14,11 +14,36 @@ pub struct CookieLoginSession {
 }
 
 pub fn serialize_cookie_string(cookies: &[Cookie<'static>]) -> String {
-    cookies
-        .iter()
-        .map(|cookie| format!("{}={}", cookie.name(), cookie.value()))
-        .collect::<Vec<_>>()
-        .join("; ")
+    serialize_cookie_string_for_host(cookies, "www.douyin.com")
+}
+
+fn cookie_domain_matches_host(domain: &str, host: &str) -> bool {
+    let domain = domain.trim().trim_start_matches('.').to_ascii_lowercase();
+    let host = host.trim().to_ascii_lowercase();
+    !domain.is_empty() && (host == domain || host.ends_with(&format!(".{}", domain)))
+}
+
+pub fn serialize_cookie_string_for_host(cookies: &[Cookie<'static>], host: &str) -> String {
+    let mut entries = Vec::new();
+    let mut seen = HashSet::new();
+
+    for cookie in cookies.iter().rev() {
+        let name = cookie.name();
+        if name.trim().is_empty() || !seen.insert(name.to_string()) {
+            continue;
+        }
+
+        let applies_to_host = cookie
+            .domain()
+            .map(|domain| cookie_domain_matches_host(domain, host))
+            .unwrap_or(true);
+        if applies_to_host {
+            entries.push(format!("{}={}", name, cookie.value()));
+        }
+    }
+
+    entries.reverse();
+    entries.join("; ")
 }
 
 pub fn parse_cookie_string(cookie_string: &str) -> Vec<Cookie<'static>> {
@@ -80,16 +105,41 @@ mod tests {
     fn serializes_cookie_string() {
         use tauri::webview::Cookie;
         let cookies = vec![
-            Cookie::parse("sessionid=abc; Domain=.example.com")
+            Cookie::parse("sessionid=abc; Domain=.douyin.com")
                 .unwrap()
                 .into_owned(),
-            Cookie::parse("user=test; Domain=.example.com")
+            Cookie::parse("user=test; Domain=www.douyin.com")
                 .unwrap()
                 .into_owned(),
         ];
         let cookie_str = serialize_cookie_string(&cookies);
         assert!(cookie_str.contains("sessionid=abc"));
         assert!(cookie_str.contains("user=test"));
+    }
+
+    #[test]
+    fn serializes_only_cookies_applicable_to_www_douyin() {
+        use tauri::webview::Cookie;
+        let cookies = vec![
+            Cookie::parse("sessionid=old; Domain=sso.douyin.com")
+                .unwrap()
+                .into_owned(),
+            Cookie::parse("sessionid=valid; Domain=.douyin.com")
+                .unwrap()
+                .into_owned(),
+            Cookie::parse("ttwid=www; Domain=www.douyin.com")
+                .unwrap()
+                .into_owned(),
+            Cookie::parse("passport=login; Domain=login.douyin.com")
+                .unwrap()
+                .into_owned(),
+        ];
+
+        let cookie_str = serialize_cookie_string(&cookies);
+        assert!(cookie_str.contains("sessionid=valid"));
+        assert!(cookie_str.contains("ttwid=www"));
+        assert!(!cookie_str.contains("sessionid=old"));
+        assert!(!cookie_str.contains("passport=login"));
     }
 
     #[test]
