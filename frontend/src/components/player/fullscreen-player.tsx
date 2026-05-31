@@ -27,6 +27,7 @@ import {
   X,
 } from "lucide-react";
 import { cn, formatDuration, formatNumber } from "@/lib/utils";
+import { prewarmVideoForPlayback } from "@/lib/media-prewarm";
 import {
   copyTextToClipboard,
   getVideoDetail,
@@ -74,6 +75,7 @@ const WHEEL_IDLE_RESET_MS = 160;
 const PLAYER_PANEL_CLOSE_DELAY_MS = 220;
 const PROGRESS_PREVIEW_WIDTH = 184;
 const PROGRESS_PREVIEW_HEIGHT = 104;
+const PROGRESS_PREVIEW_SAMPLE_RATIOS = [0.08, 0.22, 0.38, 0.55, 0.72, 0.88] as const;
 
 type PlayerPanel = "volume" | "rate" | "quality" | "download" | "music";
 
@@ -228,6 +230,7 @@ export function FullscreenPlayer({
   const autoRetryCountRef = useRef(0);
   const refreshingDetailRef = useRef(false);
   const relationRefreshSeqRef = useRef(0);
+  const relationRefreshedIdsRef = useRef(new Set<string>());
   const refreshedDetailIdsRef = useRef(new Set<string>());
   const videoProgressRafRef = useRef<number | null>(null);
   const progressSampleRef = useRef(0);
@@ -340,8 +343,15 @@ export function FullscreenPlayer({
   }, []);
 
   const syncVideoProgress = useCallback((node: HTMLVideoElement) => {
-    setCurrentTime(finiteMediaTime(node.currentTime));
+    const nextTime = finiteMediaTime(node.currentTime);
     const nextDuration = readMediaDuration(node);
+    setCurrentTime((current) => {
+      if (nextTime > 0 || current <= 0) return nextTime;
+      if (node.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || nextDuration <= 0) {
+        return current;
+      }
+      return nextTime;
+    });
     if (nextDuration > 0) {
       setDuration(nextDuration);
     }
@@ -453,6 +463,8 @@ export function FullscreenPlayer({
 
   useEffect(() => {
     if (!open || loadState !== "ready" || !currentVideo?.aweme_id) return;
+    if (relationRefreshedIdsRef.current.has(currentVideo.aweme_id)) return;
+    relationRefreshedIdsRef.current.add(currentVideo.aweme_id);
     const timer = window.setTimeout(() => {
       void refreshCurrentRelationState(currentVideo.aweme_id);
     }, 800);
@@ -1414,8 +1426,10 @@ export function FullscreenPlayer({
     setShowLoadStatus(false);
     clearLoadTimers();
 
-    setCurrentTime(0);
-    setDuration(currentMedia?.type === "image" ? IMAGE_DURATION_SECONDS : 0);
+    if (!currentMedia || currentMedia.type === "image") {
+      setCurrentTime(0);
+      setDuration(currentMedia?.type === "image" ? IMAGE_DURATION_SECONDS : 0);
+    }
     progressSampleRef.current = 0;
     setLoadState(currentMedia ? "loading" : "error");
     setPlaying(Boolean(currentMedia && desiredPlayingRef.current));
@@ -1464,6 +1478,15 @@ export function FullscreenPlayer({
     if (duration - currentTime > PLAYER_NEXT_VIDEO_PRELOAD_AHEAD_SECONDS) return;
     preloadVideoAtIndex(currentIndex + 1, false);
   }, [currentIndex, currentMedia, currentTime, duration, open, preloadVideoAtIndex]);
+
+  useEffect(() => {
+    if (!open) return;
+    const timer = window.setTimeout(() => {
+      prewarmVideoForPlayback(videos[currentIndex + 1]);
+      prewarmVideoForPlayback(videos[currentIndex - 1]);
+    }, loadState === "ready" ? 160 : 700);
+    return () => window.clearTimeout(timer);
+  }, [currentIndex, loadState, open, videos]);
 
   useEffect(() => {
     releasePreloadedMedia();
@@ -2588,7 +2611,7 @@ function ProgressBar({
           )}
           style={{ left: `calc(${progressPct}% - 6px)` }}
         />
-        {duration > 0 && previewSrc && hoverPreview.visible && (
+        {duration > 0 && previewSrc && (
           <div
             className={cn(
               "pointer-events-none absolute bottom-full z-50 mb-3 transition-[opacity,transform] duration-150",
@@ -2609,6 +2632,8 @@ function ProgressBar({
               <ProgressFramePreview
                 src={previewSrc || ""}
                 time={hoverPreview.time}
+                duration={duration}
+                visible={hoverPreview.visible}
               />
               <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center bg-gradient-to-t from-black/78 to-transparent px-2 pb-1.5 pt-5">
                 <span className="rounded-full bg-black/72 px-2 py-0.5 text-[0.68rem] font-bold tabular-nums text-white shadow-[0_8px_18px_rgba(0,0,0,0.28)]">
@@ -2627,111 +2652,191 @@ function ProgressBar({
 function ProgressFramePreview({
   src,
   time,
+  duration,
+  visible,
 }: {
   src: string;
   time: number;
+  duration: number;
+  visible: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const latestTimeRef = useRef(time);
+  const latestVisibleRef = useRef(visible);
+  const thumbnailCacheRef = useRef<Array<{ time: number; dataUrl: string }>>([]);
+  const pendingSeekFrameRef = useRef<number | null>(null);
+  const pendingDrawFrameRef = useRef<number | null>(null);
+  const sampleTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const samplingCancelledRef = useRef(false);
+  const lastExactTimeRef = useRef(-1);
+  const [fallbackFrame, setFallbackFrame] = useState<string>("");
   const [frameReady, setFrameReady] = useState(false);
 
   useEffect(() => {
-    setFrameReady(false);
-  }, [src]);
+    latestTimeRef.current = time;
+  }, [time]);
+
+  useEffect(() => {
+    latestVisibleRef.current = visible;
+  }, [visible]);
+
+  const nearestFallbackFrame = useCallback((targetTime: number) => {
+    let best = "";
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const cached of thumbnailCacheRef.current) {
+      const distance = Math.abs(cached.time - targetTime);
+      if (distance < bestDistance) {
+        best = cached.dataUrl;
+        bestDistance = distance;
+      }
+    }
+    return best;
+  }, []);
+
+  const drawPreviewFrame = useCallback(() => {
+    const node = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!node || !canvas || !node.videoWidth || !node.videoHeight || node.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      return false;
+    }
+
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const canvasWidth = Math.round(PROGRESS_PREVIEW_WIDTH * dpr);
+    const canvasHeight = Math.round(PROGRESS_PREVIEW_HEIGHT * dpr);
+    if (canvas.width !== canvasWidth) canvas.width = canvasWidth;
+    if (canvas.height !== canvasHeight) canvas.height = canvasHeight;
+
+    const sourceAspect = node.videoWidth / node.videoHeight;
+    const targetAspect = canvasWidth / canvasHeight;
+    let sourceX = 0;
+    let sourceY = 0;
+    let sourceWidth = node.videoWidth;
+    let sourceHeight = node.videoHeight;
+
+    if (sourceAspect > targetAspect) {
+      sourceWidth = node.videoHeight * targetAspect;
+      sourceX = (node.videoWidth - sourceWidth) / 2;
+    } else {
+      sourceHeight = node.videoWidth / targetAspect;
+      sourceY = (node.videoHeight - sourceHeight) / 2;
+    }
+
+    try {
+      const context = canvas.getContext("2d");
+      if (!context) return false;
+      context.clearRect(0, 0, canvasWidth, canvasHeight);
+      context.drawImage(
+        node,
+        sourceX,
+        sourceY,
+        sourceWidth,
+        sourceHeight,
+        0,
+        0,
+        canvasWidth,
+        canvasHeight
+      );
+      setFrameReady(true);
+      lastExactTimeRef.current = node.currentTime;
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const capturePreviewDataUrl = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !drawPreviewFrame()) return "";
+    try {
+      return canvas.toDataURL("image/jpeg", 0.72);
+    } catch {
+      return "";
+    }
+  }, [drawPreviewFrame]);
+
+  const requestPreviewDraw = useCallback(() => {
+    if (pendingDrawFrameRef.current !== null) {
+      window.cancelAnimationFrame(pendingDrawFrameRef.current);
+    }
+    pendingDrawFrameRef.current = window.requestAnimationFrame(() => {
+      pendingDrawFrameRef.current = null;
+      drawPreviewFrame();
+    });
+  }, [drawPreviewFrame]);
+
+  const seekPreview = useCallback((targetTime: number) => {
+    const node = videoRef.current;
+    if (!node || !src) return;
+    const fallback = nearestFallbackFrame(targetTime);
+    if (fallback) {
+      setFallbackFrame(fallback);
+      if (Math.abs(lastExactTimeRef.current - targetTime) > 0.35) {
+        setFrameReady(false);
+      }
+    }
+    if (node.readyState < HTMLMediaElement.HAVE_METADATA) {
+      try {
+        node.load();
+      } catch {
+        // Loading the preview node is opportunistic.
+      }
+      return;
+    }
+
+    const duration = finiteMediaTime(node.duration);
+    const safeTime = duration > 0
+      ? Math.min(Math.max(0, targetTime), Math.max(0, duration - 0.05))
+      : Math.max(0, targetTime);
+    try {
+      if (Math.abs(node.currentTime - safeTime) > 0.15) {
+        node.currentTime = safeTime;
+        return;
+      }
+      requestPreviewDraw();
+    } catch {
+      // Preview seeking is best-effort; the main player owns actual playback.
+    }
+  }, [nearestFallbackFrame, requestPreviewDraw, src]);
+
+  useEffect(() => {
+    if (pendingSeekFrameRef.current !== null) {
+      window.cancelAnimationFrame(pendingSeekFrameRef.current);
+    }
+    pendingSeekFrameRef.current = window.requestAnimationFrame(() => {
+      pendingSeekFrameRef.current = null;
+      seekPreview(latestTimeRef.current);
+    });
+    return () => {
+      if (pendingSeekFrameRef.current !== null) {
+        window.cancelAnimationFrame(pendingSeekFrameRef.current);
+        pendingSeekFrameRef.current = null;
+      }
+    };
+  }, [seekPreview, time]);
 
   useEffect(() => {
     const node = videoRef.current;
     if (!node || !src) return;
 
-    let cancelled = false;
+    setFrameReady(false);
+    setFallbackFrame("");
+    thumbnailCacheRef.current = [];
+    samplingCancelledRef.current = false;
     let playFallbackTimer: ReturnType<typeof window.setTimeout> | null = null;
-    let animationFrame: number | null = null;
 
-    const drawFrame = () => {
-      if (cancelled) return false;
-      const canvas = canvasRef.current;
-      if (!canvas || !node.videoWidth || !node.videoHeight || node.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-        return false;
-      }
-
-      const dpr = Math.max(1, window.devicePixelRatio || 1);
-      const canvasWidth = Math.round(PROGRESS_PREVIEW_WIDTH * dpr);
-      const canvasHeight = Math.round(PROGRESS_PREVIEW_HEIGHT * dpr);
-      if (canvas.width !== canvasWidth) canvas.width = canvasWidth;
-      if (canvas.height !== canvasHeight) canvas.height = canvasHeight;
-
-      const sourceAspect = node.videoWidth / node.videoHeight;
-      const targetAspect = canvasWidth / canvasHeight;
-      let sourceX = 0;
-      let sourceY = 0;
-      let sourceWidth = node.videoWidth;
-      let sourceHeight = node.videoHeight;
-
-      if (sourceAspect > targetAspect) {
-        sourceWidth = node.videoHeight * targetAspect;
-        sourceX = (node.videoWidth - sourceWidth) / 2;
-      } else {
-        sourceHeight = node.videoWidth / targetAspect;
-        sourceY = (node.videoHeight - sourceHeight) / 2;
-      }
-
-      try {
-        const context = canvas.getContext("2d");
-        if (!context) return false;
-        context.clearRect(0, 0, canvasWidth, canvasHeight);
-        context.drawImage(
-          node,
-          sourceX,
-          sourceY,
-          sourceWidth,
-          sourceHeight,
-          0,
-          0,
-          canvasWidth,
-          canvasHeight
-        );
-        setFrameReady(true);
-        return true;
-      } catch {
-        return false;
-      }
-    };
-
-    const seekPreview = () => {
-      const duration = finiteMediaTime(node.duration);
-      const safeTime = duration > 0
-        ? Math.min(Math.max(0, time), Math.max(0, duration - 0.05))
-        : Math.max(0, time);
-      try {
-        if (Math.abs(node.currentTime - safeTime) > 0.08) {
-          node.currentTime = safeTime;
-          return;
-        }
-        drawFrame();
-      } catch {
-        // Preview seeking is best-effort; the main player owns actual playback.
-      }
-    };
-    const requestDraw = () => {
-      if (animationFrame !== null) {
-        window.cancelAnimationFrame(animationFrame);
-      }
-      animationFrame = window.requestAnimationFrame(() => {
-        animationFrame = null;
-        drawFrame();
-      });
-    };
+    const handleLoadedMetadata = () => seekPreview(latestTimeRef.current);
     const triggerMutedDecode = () => {
-      if (drawFrame()) return;
+      if (drawPreviewFrame()) return;
       const playResult = node.play();
       if (playResult && typeof playResult.then === "function") {
         playResult
           .then(() => {
             node.pause();
-            requestDraw();
+            requestPreviewDraw();
           })
           .catch(() => {
-            requestDraw();
+            requestPreviewDraw();
           });
       }
     };
@@ -2739,13 +2844,14 @@ function ProgressFramePreview({
     node.muted = true;
     node.playsInline = true;
 
-    node.addEventListener("loadedmetadata", seekPreview);
-    node.addEventListener("loadeddata", requestDraw);
-    node.addEventListener("canplay", requestDraw);
-    node.addEventListener("seeked", requestDraw);
+    node.addEventListener("loadedmetadata", handleLoadedMetadata);
+    node.addEventListener("loadeddata", requestPreviewDraw);
+    node.addEventListener("canplay", requestPreviewDraw);
+    node.addEventListener("seeked", requestPreviewDraw);
+    node.addEventListener("timeupdate", requestPreviewDraw);
 
     if (node.readyState >= HTMLMediaElement.HAVE_METADATA) {
-      seekPreview();
+      seekPreview(latestTimeRef.current);
     } else {
       try {
         node.load();
@@ -2756,21 +2862,78 @@ function ProgressFramePreview({
 
     playFallbackTimer = window.setTimeout(triggerMutedDecode, 180);
 
-	    return () => {
-	      cancelled = true;
-	      if (playFallbackTimer !== null) {
-	        window.clearTimeout(playFallbackTimer);
-	      }
-      if (animationFrame !== null) {
-        window.cancelAnimationFrame(animationFrame);
+    return () => {
+      samplingCancelledRef.current = true;
+      if (playFallbackTimer !== null) {
+        window.clearTimeout(playFallbackTimer);
       }
-      node.removeEventListener("loadedmetadata", seekPreview);
-	      node.removeEventListener("loadeddata", requestDraw);
-	      node.removeEventListener("canplay", requestDraw);
-	      node.removeEventListener("seeked", requestDraw);
-	      releaseMediaElement(node);
-	    };
-	  }, [src, time]);
+      if (sampleTimerRef.current !== null) {
+        window.clearTimeout(sampleTimerRef.current);
+        sampleTimerRef.current = null;
+      }
+      if (pendingDrawFrameRef.current !== null) {
+        window.cancelAnimationFrame(pendingDrawFrameRef.current);
+        pendingDrawFrameRef.current = null;
+      }
+      node.removeEventListener("loadedmetadata", handleLoadedMetadata);
+      node.removeEventListener("loadeddata", requestPreviewDraw);
+      node.removeEventListener("canplay", requestPreviewDraw);
+      node.removeEventListener("seeked", requestPreviewDraw);
+      node.removeEventListener("timeupdate", requestPreviewDraw);
+      releaseMediaElement(node);
+    };
+  }, [drawPreviewFrame, requestPreviewDraw, seekPreview, src]);
+
+  useEffect(() => {
+    const node = videoRef.current;
+    if (!node || !src || duration <= 0) return;
+    if (thumbnailCacheRef.current.length > 0) return;
+
+    samplingCancelledRef.current = false;
+    const sampleTimes = PROGRESS_PREVIEW_SAMPLE_RATIOS
+      .map((ratio) => Math.min(Math.max(0.05, duration * ratio), Math.max(0.05, duration - 0.08)));
+    let index = 0;
+
+    const runNextSample = () => {
+      if (samplingCancelledRef.current || latestVisibleRef.current || index >= sampleTimes.length) {
+        return;
+      }
+      if (node.readyState < HTMLMediaElement.HAVE_METADATA) {
+        sampleTimerRef.current = window.setTimeout(runNextSample, 180);
+        return;
+      }
+
+      const sampleTime = sampleTimes[index];
+      index += 1;
+
+      const handleSeeked = () => {
+        node.removeEventListener("seeked", handleSeeked);
+        if (!samplingCancelledRef.current && !latestVisibleRef.current) {
+          const dataUrl = capturePreviewDataUrl();
+          if (dataUrl) {
+            thumbnailCacheRef.current.push({ time: sampleTime, dataUrl });
+          }
+        }
+        sampleTimerRef.current = window.setTimeout(runNextSample, 160);
+      };
+
+      try {
+        node.addEventListener("seeked", handleSeeked, { once: true });
+        node.currentTime = sampleTime;
+      } catch {
+        node.removeEventListener("seeked", handleSeeked);
+        sampleTimerRef.current = window.setTimeout(runNextSample, 160);
+      }
+    };
+
+    sampleTimerRef.current = window.setTimeout(runNextSample, 260);
+    return () => {
+      if (sampleTimerRef.current !== null) {
+        window.clearTimeout(sampleTimerRef.current);
+        sampleTimerRef.current = null;
+      }
+    };
+  }, [capturePreviewDataUrl, duration, src]);
 
   if (!src) {
     return (
@@ -2781,20 +2944,37 @@ function ProgressFramePreview({
   }
 
   return (
-    <div className="relative h-full w-full bg-black">
+    <div
+      className={cn(
+        "relative h-full w-full bg-black transition-opacity duration-100",
+        visible ? "opacity-100" : "opacity-0"
+      )}
+    >
       <canvas
         ref={canvasRef}
-        className={cn("h-full w-full transition-opacity duration-100", frameReady ? "opacity-100" : "opacity-0")}
+        className={cn("relative z-10 h-full w-full transition-opacity duration-75", frameReady ? "opacity-100" : "opacity-0")}
       />
-      {!frameReady && (
+      {fallbackFrame && (
+        <img
+          src={fallbackFrame}
+          alt=""
+          aria-hidden="true"
+          className={cn(
+            "absolute inset-0 h-full w-full object-cover transition-opacity duration-75",
+            frameReady ? "opacity-0" : "opacity-100"
+          )}
+          draggable={false}
+        />
+      )}
+      {!frameReady && !fallbackFrame && (
         <div className="absolute inset-0 flex items-center justify-center bg-white/[0.04] text-[0.72rem] font-medium text-white/55">
           正在预览
         </div>
       )}
-	      <video
-	        ref={videoRef}
-	        src={src}
-	        preload="metadata"
+      <video
+        ref={videoRef}
+        src={src}
+        preload="auto"
         muted
         playsInline
         crossOrigin="anonymous"

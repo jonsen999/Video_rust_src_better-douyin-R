@@ -302,6 +302,7 @@ pub struct AppState {
     pub(crate) cookie_login: Arc<Mutex<Option<CookieLoginSession>>>,
     pub(crate) media_http_client: reqwest::Client,
     pub(crate) media_redirect_cache: Arc<Mutex<HashMap<String, String>>>,
+    pub(crate) media_range_cache: Arc<Mutex<HashMap<String, media_proxy::CachedMediaRange>>>,
     pub(crate) download_file_index: Arc<Mutex<Option<DownloadFileIndexCache>>>,
 }
 
@@ -331,6 +332,7 @@ impl AppState {
             cookie_login: Arc::new(Mutex::new(None)),
             media_http_client,
             media_redirect_cache: Arc::new(Mutex::new(HashMap::new())),
+            media_range_cache: Arc::new(Mutex::new(HashMap::new())),
             download_file_index: Arc::new(Mutex::new(None)),
         }
     }

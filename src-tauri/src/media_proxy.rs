@@ -1,6 +1,6 @@
 use crate::config::get_user_agent;
 use crate::AppState;
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode};
 use axum::routing::get;
@@ -19,7 +19,18 @@ const INITIAL_VIDEO_RANGE: &str = "bytes=0-1048575";
 const LOCAL_MEDIA_INITIAL_RANGE_BYTES: u64 = 1024 * 1024;
 const LOCAL_MEDIA_MAX_RANGE_BYTES: u64 = 4 * 1024 * 1024;
 const REMOTE_MEDIA_MAX_RANGE_BYTES: u64 = 4 * 1024 * 1024;
+const REMOTE_MEDIA_RANGE_CACHE_ENTRIES: usize = 24;
+const PREWARM_HEADER: &str = "x-douyin-prewarm";
 const MAX_RETRIES: usize = 3;
+
+#[derive(Clone)]
+pub(crate) struct CachedMediaRange {
+    status: StatusCode,
+    content_type: Option<String>,
+    content_range: Option<String>,
+    accept_ranges: Option<String>,
+    body: Bytes,
+}
 
 #[derive(Debug, Deserialize)]
 struct MediaProxyQuery {
@@ -121,7 +132,7 @@ fn apply_cors_headers(response_headers: &mut HeaderMap, allow_origin: Option<Hea
     );
     response_headers.insert(
         header::ACCESS_CONTROL_ALLOW_HEADERS,
-        HeaderValue::from_static("Range, Content-Type, Accept"),
+        HeaderValue::from_static("Range, Content-Type, Accept, X-Douyin-Prewarm"),
     );
     response_headers.insert(
         header::ACCESS_CONTROL_EXPOSE_HEADERS,
@@ -297,6 +308,87 @@ fn cap_remote_media_range(range_header: &str, requested_media_type: &str) -> Opt
     } else {
         Some(capped)
     }
+}
+
+fn remote_media_range_cache_key(
+    url: &str,
+    range: Option<&str>,
+    requested_media_type: &str,
+) -> Option<String> {
+    if requested_media_type != "video" && requested_media_type != "audio" {
+        return None;
+    }
+    let range = range?.trim();
+    if range.is_empty() || !range.starts_with("bytes=") {
+        return None;
+    }
+    Some(format!("{requested_media_type}::{range}::{url}"))
+}
+
+fn remote_media_range_cache_keys(
+    original_url: &str,
+    upstream_url: &str,
+    range: Option<&str>,
+    requested_media_type: &str,
+) -> Vec<String> {
+    let mut keys = Vec::new();
+    for url in [upstream_url, original_url] {
+        let Some(key) = remote_media_range_cache_key(url, range, requested_media_type) else {
+            continue;
+        };
+        if !keys.iter().any(|existing| existing == &key) {
+            keys.push(key);
+        }
+    }
+    keys
+}
+
+fn cached_media_response(
+    cached: CachedMediaRange,
+    allow_origin: Option<HeaderValue>,
+) -> Response<Body> {
+    let mut response_builder = Response::builder().status(cached.status);
+    let headers = match response_builder.headers_mut() {
+        Some(headers) => headers,
+        None => return build_error_response(StatusCode::BAD_GATEWAY, "Failed to build response"),
+    };
+
+    if let Some(value) = cached
+        .content_type
+        .as_deref()
+        .and_then(|value| HeaderValue::from_str(value).ok())
+    {
+        headers.insert(header::CONTENT_TYPE, value);
+    }
+    if let Some(value) = cached
+        .content_range
+        .as_deref()
+        .and_then(|value| HeaderValue::from_str(value).ok())
+    {
+        headers.insert(header::CONTENT_RANGE, value);
+    }
+    if let Some(value) = cached
+        .accept_ranges
+        .as_deref()
+        .and_then(|value| HeaderValue::from_str(value).ok())
+    {
+        headers.insert(header::ACCEPT_RANGES, value);
+    }
+    if !headers.contains_key(header::ACCEPT_RANGES) {
+        headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    }
+    if let Ok(value) = HeaderValue::from_str(&cached.body.len().to_string()) {
+        headers.insert(header::CONTENT_LENGTH, value);
+    }
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=3600"),
+    );
+    apply_cors_headers(headers, allow_origin);
+
+    response_builder
+        .body(Body::from(cached.body))
+        .unwrap_or_else(|_| build_error_response(StatusCode::BAD_GATEWAY, "Proxy error"))
 }
 
 async fn allowed_local_media_path(state: &AppState, raw_path: &str) -> Result<PathBuf, StatusCode> {
@@ -496,6 +588,11 @@ async fn media_proxy(
         .trim()
         .to_lowercase();
     let request_range = request_headers.get(header::RANGE).cloned();
+    let is_prewarm_request = request_headers
+        .get(PREWARM_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value == "1")
+        .unwrap_or(false);
     let request_range_str = request_range
         .as_ref()
         .and_then(|value| value.to_str().ok())
@@ -538,6 +635,22 @@ async fn media_proxy(
         None
     };
     let mut upstream_url = cached_url.clone().unwrap_or_else(|| query.url.clone());
+    let range_cache_keys = remote_media_range_cache_keys(
+        &query.url,
+        &upstream_url,
+        upstream_range_value.as_deref(),
+        &requested_media_type,
+    );
+    for cache_key in &range_cache_keys {
+        if let Some(cached) = state.media_range_cache.lock().await.get(cache_key).cloned() {
+            log::info!(
+                "media proxy range cache hit: range=\"{}\" url={}",
+                request_range_str,
+                upstream_url.chars().take(120).collect::<String>()
+            );
+            return cached_media_response(cached, allow_origin);
+        }
+    }
 
     let start = std::time::Instant::now();
     let mut redirect_hops = 0usize;
@@ -749,6 +862,64 @@ async fn media_proxy(
         response_headers.get(header::CONTENT_LENGTH),
         response_headers.get(header::CONTENT_RANGE)
     );
+
+    let should_cache_range = is_prewarm_request && !range_cache_keys.is_empty();
+    if should_cache_range {
+        let declared_length = upstream_content_length
+            .parse::<usize>()
+            .unwrap_or(usize::MAX);
+        if status == StatusCode::PARTIAL_CONTENT
+            && declared_length <= REMOTE_MEDIA_MAX_RANGE_BYTES as usize
+        {
+            match upstream_response.bytes().await {
+                Ok(bytes) => {
+                    if bytes.len() <= REMOTE_MEDIA_MAX_RANGE_BYTES as usize {
+                        let cached = CachedMediaRange {
+                            status,
+                            content_type: response_headers
+                                .get(header::CONTENT_TYPE)
+                                .and_then(|value| value.to_str().ok())
+                                .map(ToString::to_string),
+                            content_range: response_headers
+                                .get(header::CONTENT_RANGE)
+                                .and_then(|value| value.to_str().ok())
+                                .map(ToString::to_string),
+                            accept_ranges: response_headers
+                                .get(header::ACCEPT_RANGES)
+                                .and_then(|value| value.to_str().ok())
+                                .map(ToString::to_string),
+                            body: bytes.clone(),
+                        };
+                        let final_cache_keys = remote_media_range_cache_keys(
+                            &query.url,
+                            &upstream_url,
+                            upstream_range_value.as_deref(),
+                            &requested_media_type,
+                        );
+                        let mut cache = state.media_range_cache.lock().await;
+                        for cache_key in final_cache_keys {
+                            if cache.len() >= REMOTE_MEDIA_RANGE_CACHE_ENTRIES {
+                                if let Some(oldest_key) = cache.keys().next().cloned() {
+                                    cache.remove(&oldest_key);
+                                }
+                            }
+                            cache.insert(cache_key, cached.clone());
+                        }
+                    }
+
+                    return response_builder
+                        .body(Body::from(bytes))
+                        .unwrap_or_else(|_| {
+                            build_error_response(StatusCode::BAD_GATEWAY, "Proxy error")
+                        });
+                }
+                Err(error) => {
+                    log::warn!("media proxy failed to read cacheable range body: {}", error);
+                    return build_error_response(StatusCode::BAD_GATEWAY, "Proxy error");
+                }
+            }
+        }
+    }
 
     let stream = upstream_response
         .bytes_stream()
