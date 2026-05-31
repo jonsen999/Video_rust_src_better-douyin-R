@@ -398,7 +398,17 @@ export function FullscreenPlayer({
     try {
       const result = await setVideoLiked(awemeId, nextLiked);
       if (!result.success) throw new Error(result.message || "点赞失败");
-      showNavigationNotice(nextLiked ? "已点赞" : "已取消点赞");
+      const actualLiked = result.is_liked ?? nextLiked;
+      const actualCount = Math.max(0, likeBaseCount + (actualLiked && !previousLiked ? 1 : !actualLiked && previousLiked ? -1 : 0));
+      setLiked(actualLiked);
+      patchCurrentVideoRelation(awemeId, {
+        is_liked: actualLiked,
+        statistics: { ...currentVideo.statistics, digg_count: actualCount },
+      });
+      if (actualLiked !== nextLiked) {
+        throw new Error(result.message || "点赞状态未生效");
+      }
+      showNavigationNotice(actualLiked ? "已点赞" : "已取消点赞");
     } catch (error) {
       setLiked(previousLiked);
       patchCurrentVideoRelation(awemeId, {

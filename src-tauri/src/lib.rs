@@ -1185,12 +1185,28 @@ async fn set_video_liked(
     };
 
     match client.set_video_liked(&aweme_id, liked).await {
-        Ok(_) => Ok(serde_json::json!({
-            "success": true,
-            "aweme_id": aweme_id,
-            "is_liked": liked,
-            "message": if liked { "点赞成功" } else { "已取消点赞" }
-        })),
+        Ok(response) => {
+            let is_liked = response
+                .get("is_digg")
+                .and_then(|value| {
+                    value
+                        .as_bool()
+                        .or_else(|| value.as_i64().map(|number| number > 0))
+                        .or_else(|| {
+                            value
+                                .as_str()
+                                .map(|text| matches!(text.trim(), "1" | "true" | "True" | "TRUE"))
+                        })
+                })
+                .unwrap_or(liked);
+            Ok(serde_json::json!({
+                "success": true,
+                "aweme_id": aweme_id,
+                "is_liked": is_liked,
+                "raw": response,
+                "message": if is_liked { "点赞成功" } else { "已取消点赞" }
+            }))
+        }
         Err(e) => Ok(api_login_or_verify_error_response(
             &client,
             if liked {

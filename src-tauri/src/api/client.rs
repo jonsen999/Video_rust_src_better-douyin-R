@@ -1098,6 +1098,11 @@ impl DouyinClient {
             .any(Self::json_boolish)
     }
 
+    fn json_boolish_any_optional(data: &serde_json::Value, keys: &[&str]) -> Option<bool> {
+        keys.iter()
+            .find_map(|key| data.get(*key).map(Self::json_boolish))
+    }
+
     fn json_boolish(value: &serde_json::Value) -> bool {
         if let Some(value) = value.as_bool() {
             return value;
@@ -2464,12 +2469,25 @@ impl DouyinClient {
         params.insert("item_type", "0".to_string());
         params.insert("type", if liked { "0" } else { "1" }.to_string());
 
-        self.request_relation_update(
-            "https://www-hj.douyin.com/aweme/v1/web/commit/item/digg/",
-            params,
-            "点赞",
-        )
-        .await
+        let response = self
+            .request_relation_update(
+                "https://www-hj.douyin.com/aweme/v1/web/commit/item/digg/",
+                params,
+                "点赞",
+            )
+            .await?;
+
+        if let Some(actual) = Self::json_boolish_any_optional(&response, &["is_digg"]) {
+            if actual != liked {
+                return Err(anyhow!(
+                    "点赞状态未生效: 期望{}，实际{}",
+                    if liked { "已点赞" } else { "未点赞" },
+                    if actual { "已点赞" } else { "未点赞" }
+                ));
+            }
+        }
+
+        Ok(response)
     }
 
     pub async fn set_video_collected(
