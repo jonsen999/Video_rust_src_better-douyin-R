@@ -383,10 +383,23 @@ export function FullscreenPlayer({
     videoProgressRafRef.current = window.requestAnimationFrame(tick);
   }, [syncVideoProgress]);
 
+  const setVideoElementRef = useCallback((node: HTMLVideoElement | null) => {
+    if (!node) return;
+
+    const previous = videoRef.current;
+    if (previous && previous !== node) {
+      releaseMediaElement(previous);
+    }
+    videoRef.current = node;
+  }, []);
+
   const goToVideo = useCallback((index: number) => {
     if (index < 0 || index >= videos.length) return;
     desiredPlayingRef.current = true;
     mediaSwitchingRef.current = false;
+    clearLoadTimers();
+    stopVideoProgressLoop();
+    releaseMediaElement(videoRef.current);
     setMediaTransitionDirection(0);
     setCurrentIndex(index);
     setMediaIndex(0);
@@ -395,7 +408,7 @@ export function FullscreenPlayer({
     progressSampleRef.current = 0;
     setPlaying(false);
     setReloadKey((value) => value + 1);
-  }, [videos.length]);
+  }, [clearLoadTimers, stopVideoProgressLoop, videos.length]);
 
   const showNavigationNotice = useCallback((message: string) => {
     setNavigationNotice(message);
@@ -1490,9 +1503,6 @@ export function FullscreenPlayer({
 
   useEffect(() => {
     releasePreloadedMedia();
-    return () => {
-      releaseMediaElement(videoRef.current);
-    };
   }, [currentVideo?.aweme_id, releasePreloadedMedia]);
 
   useEffect(() => {
@@ -1773,7 +1783,7 @@ export function FullscreenPlayer({
               >
                 {currentMedia && isVideoLikeMedia(currentMedia) && (
                   <video
-                    ref={videoRef}
+                    ref={setVideoElementRef}
                     src={currentMediaSrc}
                     poster={currentPosterSrc}
 	                    className="pointer-events-none h-full max-h-full w-full max-w-full object-contain"
