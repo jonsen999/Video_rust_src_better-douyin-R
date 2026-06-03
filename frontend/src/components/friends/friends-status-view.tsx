@@ -117,6 +117,17 @@ function formatLastActive(value: number) {
   });
 }
 
+function formatUpdateTime(value: number) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 function collectRecordsBySecUid(value: unknown) {
   const map = new Map<string, JsonRecord>();
   const direct = arrayField(value);
@@ -180,6 +191,7 @@ export function FriendsStatusView() {
   const [showManualInput, setShowManualInput] = useState(false);
   const [loading, setLoading] = useState(false);
   const [backgroundRefreshing, setBackgroundRefreshing] = useState(false);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState(0);
   const [error, setError] = useState("");
   const [response, setResponse] = useState<FriendOnlineStatusResponse | null>(null);
   const savedIdsRef = useRef<string[]>([]);
@@ -217,6 +229,9 @@ export function FriendsStatusView() {
       localStorage.setItem(STORAGE_KEY, queryIds.join("\n"));
       const result = await getFriendOnlineStatus(queryIds);
       setResponse(result);
+      if (result.success) {
+        setLastUpdatedAt(Date.now());
+      }
       if (result.success && Array.isArray(result.sec_user_ids)) {
         setSavedIds(result.sec_user_ids);
         setSavedCount(result.sec_user_ids.length);
@@ -297,6 +312,11 @@ export function FriendsStatusView() {
           <h3 className="text-[0.95rem] font-semibold text-text">好友在线状态</h3>
           <span className="text-[0.72rem] text-text-muted">
             {friends.length || ids.length} 个好友{savedCount > 0 ? ` · 已保存 ${savedCount}` : ""}
+            {backgroundRefreshing
+              ? " · 正在更新"
+              : lastUpdatedAt
+                ? ` · 上次更新于 ${formatUpdateTime(lastUpdatedAt)}`
+                : ""}
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -329,12 +349,6 @@ export function FriendsStatusView() {
             </span>
             {includeAllUsers ? "全部用户" : "仅互关"}
           </button>
-          {backgroundRefreshing && (
-            <span className="inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-sm)] border border-border bg-surface px-2.5 text-[0.72rem] text-text-muted">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              后台更新
-            </span>
-          )}
           <Button size="sm" onClick={() => void query()} disabled={loading}>
             {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
             刷新状态
