@@ -6,7 +6,7 @@ import { GlobalAlert, GlobalLoader, GlobalVerifyRecovery } from "@/components/la
 import { useAlertStore, useAppStore, useLoaderStore, useLogStore } from "@/stores/app-store";
 import { useSocket } from "@/lib/socket";
 import { useKeyboard } from "@/hooks/use-keyboard";
-import { checkUpdate, downloadUpdate, getConfig, initClient, listenEvent, restartApp, verifyCookie } from "@/lib/tauri";
+import { checkUpdate, downloadUpdate, getConfig, getFriendChatState, initClient, listenEvent, restartApp, verifyCookie } from "@/lib/tauri";
 import { useRecommendedStore } from "@/stores/recommended-store";
 
 const BOOTSTRAP_STEP_TIMEOUT_MS = 8_000;
@@ -32,6 +32,7 @@ function withBootstrapTimeout<T>(
 
 export default function App() {
   const setCookieLoggedIn = useAppStore((s) => s.setCookieLoggedIn);
+  const setFriendUnreadCount = useAppStore((s) => s.setFriendUnreadCount);
   const showAlert = useAlertStore((s) => s.showAlert);
   const { showLoader, hideLoader } = useLoaderStore();
   const lastCookieInvalidLogAt = useRef(0);
@@ -123,26 +124,47 @@ export default function App() {
   }, [showAlert, showUpdateReadyPrompt]);
 
   useEffect(() => {
+    let disposed = false;
+    void getFriendChatState()
+      .then((state) => {
+        if (disposed) return;
+        const unreadCounts = state.unreadCounts && typeof state.unreadCounts === "object" ? state.unreadCounts : {};
+        const total = Object.values(unreadCounts).reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0);
+        setFriendUnreadCount(total);
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+    };
+  }, [setFriendUnreadCount]);
+
+  useEffect(() => {
     const handleCookieInvalid = (event: Event) => {
       const detail = (event as CustomEvent<{ message?: string }>).detail || {};
       const message = detail.message || "Cookie 已失效，请重新登录以继续使用搜索和推荐功能。";
       setCookieLoggedIn(false);
 
       const now = Date.now();
-      if (now - lastCookieInvalidLogAt.current > 3000) {
-        lastCookieInvalidLogAt.current = now;
-        useLogStore.getState().addLog(message, "warning");
-        
-        showAlert({
-          title: "登录已失效",
-          variant: "warning",
-          description: message,
-          actionLabel: "前往设置",
-          onAction: () => {
-            useAppStore.getState().setView("settings");
-          }
-        });
+      if (now - lastCookieInvalidLogAt.current <= 12_000) {
+        return;
       }
+
+      lastCookieInvalidLogAt.current = now;
+      useLogStore.getState().addLog(message, "warning");
+
+      if (useAppStore.getState().currentView === "settings") {
+        return;
+      }
+
+      showAlert({
+        title: "登录已失效",
+        variant: "warning",
+        description: message,
+        actionLabel: "前往设置",
+        onAction: () => {
+          useAppStore.getState().setView("settings");
+        }
+      });
     };
 
     window.addEventListener("dy-cookie-invalid", handleCookieInvalid);

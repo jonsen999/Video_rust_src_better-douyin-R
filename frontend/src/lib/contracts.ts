@@ -211,6 +211,40 @@ export interface FriendOnlineStatusResponse extends ApiResponse {
   active_status?: unknown;
 }
 
+export interface SendFriendMessageResponse extends ApiResponse {
+  client_message_id?: string;
+  message_id?: string | number;
+  conversation_id?: string;
+  conversation?: Record<string, unknown>;
+  raw?: unknown;
+}
+
+export interface FriendMessageHistoryItem {
+  conversation_id?: string;
+  conversation_short_id?: string | number;
+  conversation_type?: string | number;
+  server_message_id?: string | number;
+  sender_uid?: string;
+  senderUid?: string;
+  content?: string;
+  text?: string;
+  create_time?: number;
+  created_at?: number;
+  message_type?: number;
+}
+
+export interface FriendMessageHistoryResponse extends ApiResponse {
+  messages?: FriendMessageHistoryItem[];
+  next_cursor?: number;
+  has_more?: boolean;
+  conversation?: unknown;
+}
+
+export interface FriendChatStateResponse extends ApiResponse {
+  summaries?: Record<string, unknown>;
+  unreadCounts?: Record<string, number>;
+}
+
 export interface CollectedVideosResponse extends ApiResponse {
   data?: VideoInfo[];
   count?: number;
@@ -291,6 +325,9 @@ export interface CookieStatus {
   valid: boolean;
   user_name: string | null;
   user_id: string | null;
+  avatar_thumb?: string | null;
+  avatar_medium?: string | null;
+  avatar_larger?: string | null;
   expires_at: number | null;
   need_login?: boolean;
   need_verify?: boolean;
