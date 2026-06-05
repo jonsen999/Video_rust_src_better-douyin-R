@@ -344,7 +344,7 @@ fn cmd_config(cmd: ConfigCommands) -> Result<()> {
                 "language": config.language,
                 "config_file": dirs::config_dir()
                     .unwrap_or_else(|| PathBuf::from("."))
-                    .join("douyin-downloader")
+                    .join("better-douyin-R")
                     .join("config.json")
                     .display()
                     .to_string(),
@@ -355,7 +355,7 @@ fn cmd_config(cmd: ConfigCommands) -> Result<()> {
             let mut config = AppConfig::load();
             let config_file = dirs::config_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join("douyin-downloader")
+                .join("better-douyin-R")
                 .join("config.json");
 
             match key.as_str() {

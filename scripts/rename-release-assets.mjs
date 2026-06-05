@@ -19,15 +19,15 @@ const [owner, repo] = repository.split('/');
 const apiBase = 'https://api.github.com';
 
 const renameMap = new Map([
-  [`Douyin.Downloader_${appVersion}_aarch64.dmg`, `Douyin-Downloader-v${appVersion}-macos-arm64.dmg`],
-  [`Douyin.Downloader_${appVersion}_x64.dmg`, `Douyin-Downloader-v${appVersion}-macos-x64.dmg`],
-  ['Douyin.Downloader_aarch64.app.tar.gz', `Douyin-Downloader-v${appVersion}-macos-arm64-updater.tar.gz`],
-  ['Douyin.Downloader_x64.app.tar.gz', `Douyin-Downloader-v${appVersion}-macos-x64-updater.tar.gz`],
-  [`Douyin.Downloader_${appVersion}_x64-setup.exe`, `Douyin-Downloader-v${appVersion}-windows-x64-installer.exe`],
-  [`Douyin-Downloader-v${appVersion}-windows-x64-portable.exe`, `Douyin-Downloader-v${appVersion}-windows-x64-portable-updater.exe`],
-  [`Douyin.Downloader_${appVersion}_amd64.AppImage`, `Douyin-Downloader-v${appVersion}-linux-x64.AppImage`],
-  [`Douyin.Downloader_${appVersion}_amd64.deb`, `Douyin-Downloader-v${appVersion}-linux-x64.deb`],
-  [`Douyin.Downloader-${appVersion}-1.x86_64.rpm`, `Douyin-Downloader-v${appVersion}-linux-x64.rpm`],
+  [`better-douyin-R_${appVersion}_aarch64.dmg`, `better-douyin-R-v${appVersion}-macos-arm64.dmg`],
+  [`better-douyin-R_${appVersion}_x64.dmg`, `better-douyin-R-v${appVersion}-macos-x64.dmg`],
+  ['better-douyin-R_aarch64.app.tar.gz', `better-douyin-R-v${appVersion}-macos-arm64-updater.tar.gz`],
+  ['better-douyin-R_x64.app.tar.gz', `better-douyin-R-v${appVersion}-macos-x64-updater.tar.gz`],
+  [`better-douyin-R_${appVersion}_x64-setup.exe`, `better-douyin-R-v${appVersion}-windows-x64-installer.exe`],
+  [`better-douyin-R-v${appVersion}-windows-x64-portable.exe`, `better-douyin-R-v${appVersion}-windows-x64-portable-updater.exe`],
+  [`better-douyin-R_${appVersion}_amd64.AppImage`, `better-douyin-R-v${appVersion}-linux-x64.AppImage`],
+  [`better-douyin-R_${appVersion}_amd64.deb`, `better-douyin-R-v${appVersion}-linux-x64.deb`],
+  [`better-douyin-R-${appVersion}-1.x86_64.rpm`, `better-douyin-R-v${appVersion}-linux-x64.rpm`],
 ]);
 
 for (const [from, to] of [...renameMap]) {

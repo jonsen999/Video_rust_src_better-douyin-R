@@ -65,6 +65,7 @@ fn packed_ints_field(field: u64, values: &[i64]) -> Vec<u8> {
     bytes_field(field, &payload)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_request(
     cmd: i64,
     token: &str,
@@ -115,6 +116,7 @@ pub fn build_send_message_body(
     content: &str,
     client_message_id: &str,
     now_ms: i64,
+    message_type: i64,
 ) -> Vec<u8> {
     let mut ext_client_id = string_field(1, "s:client_message_id");
     ext_client_id.extend(string_field(2, client_message_id));
@@ -131,7 +133,10 @@ pub fn build_send_message_body(
     inner.extend(bytes_field(5, &ext_client_id));
     inner.extend(bytes_field(5, &ext_time));
     inner.extend(bytes_field(5, &ext_mentions));
-    inner.extend(int_field(6, 7));
+    inner.extend(int_field(
+        6,
+        if message_type > 0 { message_type } else { 7 },
+    ));
     inner.extend(string_field(7, ticket));
     inner.extend(string_field(8, client_message_id));
     bytes_field(100, &inner)

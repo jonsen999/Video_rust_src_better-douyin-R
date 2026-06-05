@@ -1,5 +1,7 @@
 use crate::config::get_user_agent;
 use crate::AppState;
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce};
 use axum::body::{Body, Bytes};
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode};
@@ -36,6 +38,7 @@ pub(crate) struct CachedMediaRange {
 struct MediaProxyQuery {
     url: String,
     media_type: Option<String>,
+    skey: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -84,6 +87,46 @@ fn is_allowed_media_url(url: &Url) -> bool {
     ALLOWED_MEDIA_DOMAINS
         .iter()
         .any(|domain| host_matches(&host, domain))
+}
+
+fn hex_to_bytes(value: &str) -> Option<Vec<u8>> {
+    let trimmed = value.trim();
+    if trimmed.len() % 2 != 0 {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(trimmed.len() / 2);
+    for index in (0..trimmed.len()).step_by(2) {
+        bytes.push(u8::from_str_radix(&trimmed[index..index + 2], 16).ok()?);
+    }
+    Some(bytes)
+}
+
+fn guess_image_content_type_from_bytes(data: &[u8]) -> &'static str {
+    if data.starts_with(b"\xff\xd8\xff") {
+        "image/jpeg"
+    } else if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if data.starts_with(b"RIFF") && data.get(8..12) == Some(b"WEBP") {
+        "image/webp"
+    } else if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
+        "image/gif"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+fn decrypt_im_image_bytes(encrypted: &[u8], skey: &str) -> Option<Vec<u8>> {
+    if encrypted.len() <= 28 {
+        return None;
+    }
+    let key = hex_to_bytes(skey)?;
+    if key.len() != 32 {
+        return None;
+    }
+    let cipher = Aes256Gcm::new_from_slice(&key).ok()?;
+    cipher
+        .decrypt(Nonce::from_slice(&encrypted[..12]), &encrypted[12..])
+        .ok()
 }
 
 fn should_send_cookie(url: &Url) -> bool {
@@ -849,7 +892,7 @@ async fn media_proxy(
         response_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     }
 
-    apply_cors_headers(response_headers, allow_origin);
+    apply_cors_headers(response_headers, allow_origin.clone());
     response_headers.insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("public, max-age=3600"),
@@ -864,6 +907,61 @@ async fn media_proxy(
     );
 
     let should_cache_range = is_prewarm_request && !range_cache_keys.is_empty();
+    if requested_media_type == "image" {
+        if let Some(skey) = query
+            .skey
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            match upstream_response.bytes().await {
+                Ok(encrypted) => {
+                    if let Some(decrypted) = decrypt_im_image_bytes(&encrypted, skey) {
+                        let mut builder = Response::builder().status(status);
+                        let headers = match builder.headers_mut() {
+                            Some(headers) => headers,
+                            None => {
+                                return build_error_response(
+                                    StatusCode::BAD_GATEWAY,
+                                    "Failed to build response",
+                                )
+                            }
+                        };
+                        headers.insert(
+                            header::CONTENT_TYPE,
+                            HeaderValue::from_static(guess_image_content_type_from_bytes(
+                                &decrypted,
+                            )),
+                        );
+                        if let Ok(value) = HeaderValue::from_str(&decrypted.len().to_string()) {
+                            headers.insert(header::CONTENT_LENGTH, value);
+                        }
+                        headers.insert(
+                            header::CACHE_CONTROL,
+                            HeaderValue::from_static("public, max-age=3600"),
+                        );
+                        apply_cors_headers(headers, allow_origin);
+                        return builder.body(Body::from(decrypted)).unwrap_or_else(|_| {
+                            build_error_response(StatusCode::BAD_GATEWAY, "Proxy error")
+                        });
+                    }
+                    log::warn!(
+                        "media proxy failed to decrypt IM image, returning raw response: url={}",
+                        upstream_url.chars().take(120).collect::<String>()
+                    );
+                    return response_builder
+                        .body(Body::from(encrypted))
+                        .unwrap_or_else(|_| {
+                            build_error_response(StatusCode::BAD_GATEWAY, "Proxy error")
+                        });
+                }
+                Err(error) => {
+                    log::warn!("media proxy failed to read encrypted image body: {}", error);
+                    return build_error_response(StatusCode::BAD_GATEWAY, "Proxy error");
+                }
+            }
+        }
+    }
+
     if should_cache_range {
         let declared_length = upstream_content_length
             .parse::<usize>()

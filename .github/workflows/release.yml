@@ -5,6 +5,15 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag, for example v1.0.25'
+        required: true
+        type: string
+      release_notes:
+        description: '新版本内容，会显示在应用内更新提示和 Release 正文顶部'
+        required: false
+        type: string
 
 concurrency:
   group: release-${{ github.ref }}
@@ -12,16 +21,18 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  RELEASE_BODY: |
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+  RELEASE_NOTES: ${{ github.event_name == 'workflow_dispatch' && inputs.release_notes || '## 新版本内容\n\n- 本次更新内容稍后补充。' }}
+  DOWNLOAD_GUIDE: |
     ## 下载建议
 
-    - Windows 安装版（推荐大多数用户）：下载 `Douyin-Downloader-v*-windows-x64-installer.exe`
-    - Windows 便携版（免安装）：下载 `Douyin-Downloader-v*-windows-x64-portable.zip`，解压后运行里面的 exe
-    - macOS Apple Silicon / M 系列：下载 `Douyin-Downloader-v*-macos-arm64.dmg`，免安装可下 `Douyin-Downloader-v*-macos-arm64-portable.zip`
-    - macOS Intel：下载 `Douyin-Downloader-v*-macos-x64.dmg`，免安装可下 `Douyin-Downloader-v*-macos-x64-portable.zip`
-    - Linux Debian/Ubuntu：下载 `Douyin-Downloader-v*-linux-x64.deb`
-    - Linux Fedora/openSUSE/RHEL：下载 `Douyin-Downloader-v*-linux-x64.rpm`
-    - Linux 通用便携：下载 `Douyin-Downloader-v*-linux-x64.AppImage`
+    - Windows 安装版（推荐大多数用户）：下载 `better-douyin-R-v*-windows-x64-installer.exe`
+    - Windows 便携版（免安装）：下载 `better-douyin-R-v*-windows-x64-portable.zip`，解压后运行里面的 exe
+    - macOS Apple Silicon / M 系列：下载 `better-douyin-R-v*-macos-arm64.dmg`，免安装可下 `better-douyin-R-v*-macos-arm64-portable.zip`
+    - macOS Intel：下载 `better-douyin-R-v*-macos-x64.dmg`，免安装可下 `better-douyin-R-v*-macos-x64-portable.zip`
+    - Linux Debian/Ubuntu：下载 `better-douyin-R-v*-linux-x64.deb`
+    - Linux Fedora/openSUSE/RHEL：下载 `better-douyin-R-v*-linux-x64.rpm`
+    - Linux 通用便携：下载 `better-douyin-R-v*-linux-x64.AppImage`
 
     `*-updater.*`、`.sig` 和 `latest.json` / `windows.json` / `darwin.json` / `linux.json` 主要用于自动更新和签名校验，普通安装通常不需要手动下载。
 
@@ -73,9 +84,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tauriScript: cargo tauri
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Douyin Downloader ${{ github.ref_name }}'
-          releaseBody: ${{ env.RELEASE_BODY }}
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: 'better-douyin-R ${{ env.RELEASE_TAG }}'
+          releaseBody: ${{ env.RELEASE_NOTES }}
           releaseDraft: false
           prerelease: false
           retryAttempts: 5
@@ -84,14 +95,14 @@ jobs:
       - name: Normalize release asset names
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ env.RELEASE_TAG }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: node scripts/rename-release-assets.mjs
 
       - name: Package portable macOS zip
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           APP_DIR="src-tauri/target/${{ matrix.target }}/release/bundle/macos"
           APP_PATH="$(find "$APP_DIR" -maxdepth 1 -name "*.app" -print -quit)"
           if [ -z "$APP_PATH" ]; then
@@ -99,16 +110,16 @@ jobs:
             find "src-tauri/target" -maxdepth 6 -name "*.app" -print || true
             exit 1
           fi
-          DEST="Douyin-Downloader-v${VERSION}-${{ matrix.label }}-portable.zip"
+          DEST="better-douyin-R-v${VERSION}-${{ matrix.label }}-portable.zip"
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$DEST"
           echo "Created: $DEST"
 
       - name: Upload portable macOS zip to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
           draft: false
-          files: Douyin-Downloader-v*-${{ matrix.label }}-portable.zip
+          files: better-douyin-R-v*-${{ matrix.label }}-portable.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -151,9 +162,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tauriScript: cargo tauri
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Douyin Downloader ${{ github.ref_name }}'
-          releaseBody: ${{ env.RELEASE_BODY }}
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: 'better-douyin-R ${{ env.RELEASE_TAG }}'
+          releaseBody: ${{ env.RELEASE_NOTES }}
           releaseDraft: false
           prerelease: false
           retryAttempts: 5
@@ -162,7 +173,7 @@ jobs:
       - name: Normalize release asset names
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ env.RELEASE_TAG }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: node scripts/rename-release-assets.mjs
 
@@ -225,17 +236,17 @@ jobs:
             exit 1
           }
 
-          $version = "${{ github.ref_name }}" -replace '^v',''
-          $updaterExe = "Douyin-Downloader-v${version}-windows-x64-portable.exe"
-          $portableExe = "Douyin-Downloader.exe"
+          $version = "${env:RELEASE_TAG}" -replace '^v',''
+          $updaterExe = "better-douyin-R-v${version}-windows-x64-portable.exe"
+          $portableExe = "better-douyin-R.exe"
           Copy-Item $exePath $updaterExe
           Copy-Item $exePath $portableExe
           Write-Output "Created: $updaterExe"
           Write-Output "Created: $portableExe"
 
           $readme = @"
-          Douyin Downloader Windows portable
-          =================================
+          better-douyin-R Windows portable
+          ================================
 
           解压后双击 $portableExe 即可启动。
 
@@ -243,8 +254,8 @@ jobs:
           https://developer.microsoft.com/microsoft-edge/webview2/
           "@
           $readme | Set-Content -Path "README-Windows-Portable.txt" -Encoding UTF8
-          Compress-Archive -Path $portableExe, "README-Windows-Portable.txt" -DestinationPath "Douyin-Downloader-v${version}-windows-x64-portable.zip" -Force
-          Write-Output "Created: Douyin-Downloader-v${version}-windows-x64-portable.zip"
+          Compress-Archive -Path $portableExe, "README-Windows-Portable.txt" -DestinationPath "better-douyin-R-v${version}-windows-x64-portable.zip" -Force
+          Write-Output "Created: better-douyin-R-v${version}-windows-x64-portable.zip"
 
       - name: Sign portable assets
         shell: pwsh
@@ -252,14 +263,14 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          $portable = Get-ChildItem -Path . -Filter "Douyin-Downloader-v*-windows-x64-portable.exe" -File | Select-Object -First 1
+          $portable = Get-ChildItem -Path . -Filter "better-douyin-R-v*-windows-x64-portable.exe" -File | Select-Object -First 1
           if (-not $portable) {
             Write-Error "Could not find portable exe to sign"
             exit 1
           }
           cargo tauri signer sign $portable.FullName
 
-          $portableZip = Get-ChildItem -Path . -Filter "Douyin-Downloader-v*-windows-x64-portable.zip" -File | Select-Object -First 1
+          $portableZip = Get-ChildItem -Path . -Filter "better-douyin-R-v*-windows-x64-portable.zip" -File | Select-Object -First 1
           if (-not $portableZip) {
             Write-Error "Could not find portable zip to sign"
             exit 1
@@ -269,13 +280,13 @@ jobs:
       - name: Upload portable assets to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
           draft: false
           files: |
-            Douyin-Downloader-v*-windows-x64-portable.exe
-            Douyin-Downloader-v*-windows-x64-portable.exe.sig
-            Douyin-Downloader-v*-windows-x64-portable.zip
-            Douyin-Downloader-v*-windows-x64-portable.zip.sig
+            better-douyin-R-v*-windows-x64-portable.exe
+            better-douyin-R-v*-windows-x64-portable.exe.sig
+            better-douyin-R-v*-windows-x64-portable.zip
+            better-douyin-R-v*-windows-x64-portable.zip.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -323,9 +334,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tauriScript: cargo tauri
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Douyin Downloader ${{ github.ref_name }}'
-          releaseBody: ${{ env.RELEASE_BODY }}
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: 'better-douyin-R ${{ env.RELEASE_TAG }}'
+          releaseBody: ${{ env.RELEASE_NOTES }}
           releaseDraft: false
           prerelease: false
           retryAttempts: 5
@@ -334,7 +345,7 @@ jobs:
       - name: Normalize release asset names
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ env.RELEASE_TAG }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: node scripts/rename-release-assets.mjs
 
@@ -354,7 +365,7 @@ jobs:
       - name: Verify and publish updater metadata aliases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
 
@@ -368,6 +379,12 @@ jobs:
             --pattern '*.sig'
           node scripts/rename-release-assets.mjs
           node scripts/finalize-updater-metadata.mjs
+
+          release_body="$(mktemp)"
+          printf '%s\n\n%s\n' "$RELEASE_NOTES" "$DOWNLOAD_GUIDE" > "$release_body"
+          gh release edit "$VERSION" \
+            --repo "${{ github.repository }}" \
+            --notes-file "$release_body"
 
           gh release upload "$VERSION" latest.json darwin.json windows.json linux.json \
             --repo "${{ github.repository }}" \

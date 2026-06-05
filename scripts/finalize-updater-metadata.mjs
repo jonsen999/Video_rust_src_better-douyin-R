@@ -10,7 +10,7 @@ if (!version.startsWith('v')) {
   throw new Error('VERSION must be a tag like v0.0.9');
 }
 if (!repository || !repository.includes('/')) {
-  throw new Error('GITHUB_REPOSITORY must be set, for example anYuJia/douyin-downloader-rust');
+  throw new Error('GITHUB_REPOSITORY must be set, for example anYuJia/better-douyin-R');
 }
 
 const appVersion = version.slice(1);
@@ -18,6 +18,7 @@ const baseUrl = `https://github.com/${repository}/releases/download/${version}`;
 const previous = fs.existsSync('latest.json')
   ? JSON.parse(fs.readFileSync('latest.json', 'utf8'))
   : {};
+const releaseNotes = (process.env.RELEASE_NOTES || process.env.RELEASE_BODY || '').trim();
 
 function readSignature(assetName) {
   const sigPath = `${assetName}.sig`;
@@ -28,19 +29,19 @@ function readSignature(assetName) {
 }
 
 const assets = {
-  darwinArmApp: `Douyin-Downloader-v${appVersion}-macos-arm64-updater.tar.gz`,
-  darwinX64App: `Douyin-Downloader-v${appVersion}-macos-x64-updater.tar.gz`,
-  windowsInstaller: `Douyin-Downloader-v${appVersion}-windows-x64-installer.exe`,
-  windowsPortable: `Douyin-Downloader-v${appVersion}-windows-x64-portable-updater.exe`,
-  linuxAppImage: `Douyin-Downloader-v${appVersion}-linux-x64.AppImage`,
-  linuxDeb: `Douyin-Downloader-v${appVersion}-linux-x64.deb`,
-  linuxRpm: `Douyin-Downloader-v${appVersion}-linux-x64.rpm`
+  darwinArmApp: `better-douyin-R-v${appVersion}-macos-arm64-updater.tar.gz`,
+  darwinX64App: `better-douyin-R-v${appVersion}-macos-x64-updater.tar.gz`,
+  windowsInstaller: `better-douyin-R-v${appVersion}-windows-x64-installer.exe`,
+  windowsPortable: `better-douyin-R-v${appVersion}-windows-x64-portable-updater.exe`,
+  linuxAppImage: `better-douyin-R-v${appVersion}-linux-x64.AppImage`,
+  linuxDeb: `better-douyin-R-v${appVersion}-linux-x64.deb`,
+  linuxRpm: `better-douyin-R-v${appVersion}-linux-x64.rpm`
 };
 
 const metadata = {
   version: appVersion,
-  notes: process.env.RELEASE_BODY || previous.notes || '',
-  pub_date: previous.pub_date || '',
+  notes: releaseNotes || previous.notes || `better-douyin-R v${appVersion}`,
+  pub_date: previous.pub_date || new Date().toISOString(),
   platforms: {
     'darwin-aarch64': {
       signature: readSignature(assets.darwinArmApp),

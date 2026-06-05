@@ -1,13 +1,13 @@
 [package]
-name = "douyin-downloader"
-version = "1.0.24"
-description = "抖音视频下载器"
+name = "better-douyin-r"
+version = "1.0.25"
+description = "better-douyin-R desktop application"
 authors = ["anYuJia"]
 license = "MIT"
-repository = "https://github.com/anYuJia/douyin-downloader-rust"
+repository = "https://github.com/anYuJia/better-douyin-R"
 edition = "2021"
 rust-version = "1.77.2"
-default-run = "douyin-downloader"
+default-run = "better-douyin-r"
 
 [lib]
 name = "app_lib"
@@ -38,6 +38,7 @@ sha2 = "0.10"
 md5 = "0.7"
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 openssl = "0.10"
+aes-gcm = "0.10"
 
 # 时间处理
 chrono = { version = "0.4", features = ["serde"] }

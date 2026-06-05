@@ -44,7 +44,7 @@ impl HistoryManager {
     fn get_history_path() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("douyin-downloader")
+            .join("better-douyin-R")
             .join("history.json")
     }
 
@@ -154,7 +154,7 @@ mod tests {
 
     fn test_history_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "douyin-downloader-{}-{}.json",
+            "better-douyin-R-{}-{}.json",
             name,
             uuid::Uuid::new_v4()
         ))

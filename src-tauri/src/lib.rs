@@ -173,7 +173,7 @@ fn sanitize_sec_user_ids(ids: Vec<String>) -> Vec<String> {
 fn friend_chat_state_path() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("douyin-downloader")
+        .join("better-douyin-R")
         .join("friend_chat_state.json")
 }
 
@@ -2461,6 +2461,7 @@ async fn send_friend_message(
 
 /// 发送图片私信。
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn send_friend_image_message(
     state: State<'_, AppState>,
     to_user_id: Option<String>,
@@ -4012,7 +4013,7 @@ async fn download_portable_update(
     let exe_stem = current_exe
         .file_stem()
         .and_then(|value| value.to_str())
-        .unwrap_or("douyin-downloader");
+        .unwrap_or("better-douyin-R");
     let update_path = exe_dir.join(format!("{exe_stem}.update.exe"));
     let script_path = exe_dir.join(format!("{exe_stem}.update.ps1"));
 

@@ -3055,7 +3055,7 @@ mod tests {
     #[tokio::test]
     async fn unique_output_file_does_not_overwrite_existing_file() {
         let dir =
-            std::env::temp_dir().join(format!("douyin-downloader-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("better-douyin-r-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create test dir");
         let existing = dir.join("clip.mp4");
         std::fs::write(&existing, b"existing").expect("write existing file");

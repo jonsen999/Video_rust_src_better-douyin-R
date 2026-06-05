@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Douyin Downloader",
-  "version": "1.0.24",
-  "identifier": "com.anyujia.douyin-downloader.rust",
+  "productName": "better-douyin-R",
+  "version": "1.0.25",
+  "identifier": "com.anyujia.better-douyin-r",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://127.0.0.1:1420",
@@ -13,7 +13,7 @@
     "withGlobalTauri": false,
     "windows": [
       {
-        "title": "Douyin Downloader",
+        "title": "better-douyin-R",
         "width": 1200,
         "height": 800,
         "minWidth": 900,
@@ -52,7 +52,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/anYuJia/douyin-downloader-rust/releases/latest/download/latest.json"
+        "https://github.com/anYuJia/better-douyin-R/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ4N0YyNERCNDcxNjlGRgpSV1QvYVhHMFRmS0hEZmpYNEdhWEFnUExoU1dqUHFiYXhnU2UzWm1Rblo5UUc4MnM0cE13RXFiNAo=",
       "dialog": false

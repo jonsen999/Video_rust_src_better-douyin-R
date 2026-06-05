@@ -1,10 +1,10 @@
 <div align="center">
 
-<img src="frontend/public/animated_icon.svg" width="120" height="120" alt="Douyin Downloader Logo">
+<img src="frontend/public/animated_icon.svg" width="120" height="120" alt="better-douyin-R Logo">
 
-# Douyin Downloader
+# better-douyin-R
 
-跨平台桌面抖音下载工具，支持用户搜索、链接解析、批量下载、推荐流预览、本地播放和下载管理。
+更轻更快的 Rust / Tauri 版抖音桌面工具，支持用户搜索、链接解析、批量下载、推荐流预览、本地播放、私信图片体验和下载管理。
 
 <p>
   <img src="https://img.shields.io/badge/Rust-1.77%2B-orange?style=flat-square&logo=rust" alt="Rust">
@@ -28,7 +28,7 @@
 | **Rust / Tauri 版** | 推荐日常桌面使用，体积更小，启动和本地播放体验更好 |
 | **Python 版** | 适合想直接改源码，或更熟悉 Python 生态的用户 |
 
-Python 版见：[DY_video_downloader](https://github.com/anYuJia/DY_video_downloader)。
+Python 版见：[better-douyin](https://github.com/anYuJia/better-douyin)。
 
 ## 主要功能
 
@@ -76,7 +76,7 @@ Python 版见：[DY_video_downloader](https://github.com/anYuJia/DY_video_downlo
 
 ## 下载安装
 
-从 [Releases](https://github.com/anYuJia/douyin-downloader-rust/releases/latest) 下载对应平台的安装包。
+从 [Releases](https://github.com/anYuJia/better-douyin-R/releases/latest) 下载对应平台的安装包。
 
 | 平台 | 推荐文件 | 说明 |
 |:---|:---|:---|
@@ -93,7 +93,7 @@ Python 版见：[DY_video_downloader](https://github.com/anYuJia/DY_video_downlo
 macOS 首次运行如果提示“无法验证开发者”，可执行：
 
 ```bash
-sudo xattr -rd com.apple.quarantine /Applications/Douyin\ Downloader.app
+sudo xattr -rd com.apple.quarantine /Applications/better-douyin-R.app
 ```
 
 ## 首次使用
@@ -133,8 +133,8 @@ douyin-dl config set cookie "your-cookie"
 需要 Rust、Node.js 和 Tauri 所需系统依赖。系统依赖可参考 [Tauri 官方文档](https://tauri.app/start/prerequisites/)。
 
 ```bash
-git clone https://github.com/anYuJia/douyin-downloader-rust.git
-cd douyin-downloader-rust/src-tauri
+git clone https://github.com/anYuJia/better-douyin-R.git
+cd better-douyin-R/src-tauri
 cargo tauri dev
 ```
 
@@ -175,7 +175,7 @@ cargo tauri build
 
 ## 反馈与贡献
 
-- 发现问题：欢迎提交 [Issue](https://github.com/anYuJia/douyin-downloader-rust/issues)
+- 发现问题：欢迎提交 [Issue](https://github.com/anYuJia/better-douyin-R/issues)
 - 想改进功能：欢迎发起 Pull Request
 - 包管理器分发模板见 [packaging/package-managers](packaging/package-managers)
 
@@ -186,8 +186,8 @@ cargo tauri build
 ## Star History
 
 <p align="center">
-  <a href="https://star-history.com/#anYuJia/douyin-downloader-rust&Date">
-    <img src="https://api.star-history.com/svg?repos=anYuJia/douyin-downloader-rust&type=Date" width="100%" alt="douyin-downloader-rust Star History Chart">
+  <a href="https://star-history.com/#anYuJia/better-douyin-R&Date">
+    <img src="https://api.star-history.com/svg?repos=anYuJia/better-douyin-R&type=Date" width="100%" alt="better-douyin-R Star History Chart">
   </a>
 </p>
 

@@ -7,6 +7,10 @@ on:
         description: 'Release tag to finalize, for example v0.0.9'
         required: true
         type: string
+      release_notes:
+        description: '新版本内容，会显示在应用内更新提示；留空则复用已有 latest.json'
+        required: false
+        type: string
 
 concurrency:
   group: finalize-updater-${{ inputs.version }}
@@ -43,6 +47,7 @@ jobs:
       - name: Generate updater metadata
         env:
           VERSION: ${{ inputs.version }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
         run: node scripts/finalize-updater-metadata.mjs
 
       - name: Upload updater metadata aliases

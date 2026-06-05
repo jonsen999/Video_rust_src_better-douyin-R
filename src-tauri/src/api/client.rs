@@ -12,8 +12,8 @@ use rand::{distributions::Alphanumeric, Rng};
 use regex::Regex;
 use reqwest::redirect::Policy;
 use serde::de::DeserializeOwned;
-use sha2::Sha256;
-use std::collections::{HashMap, HashSet};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
@@ -34,6 +34,18 @@ fn clean_video_media_url(url: &str) -> String {
 }
 
 type HmacSha256 = Hmac<Sha256>;
+
+fn crc32_hex(bytes: &[u8]) -> String {
+    let mut crc: u32 = 0xffff_ffff;
+    for &byte in bytes {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    format!("{:08x}", !crc)
+}
 
 /// 抖音 API 客户端
 #[derive(Clone)]
@@ -460,6 +472,109 @@ impl DouyinClient {
             .collect::<String>()
             .to_lowercase();
         format!("verify_0{}", random_str)
+    }
+
+    fn aws_quote(value: &str) -> String {
+        urlencoding::encode(value)
+            .replace('+', "%20")
+            .replace("%7E", "~")
+    }
+
+    fn aws_canonical_query(params: &BTreeMap<String, String>) -> String {
+        params
+            .iter()
+            .map(|(key, value)| format!("{}={}", Self::aws_quote(key), Self::aws_quote(value)))
+            .collect::<Vec<_>>()
+            .join("&")
+    }
+
+    fn aws_signing_key(secret_access_key: &str, date_stamp: &str) -> Result<Vec<u8>> {
+        let mut mac = HmacSha256::new_from_slice(format!("AWS4{secret_access_key}").as_bytes())?;
+        mac.update(date_stamp.as_bytes());
+        let k_date = mac.finalize().into_bytes();
+
+        let mut mac = HmacSha256::new_from_slice(&k_date)?;
+        mac.update(b"cn-north-1");
+        let k_region = mac.finalize().into_bytes();
+
+        let mut mac = HmacSha256::new_from_slice(&k_region)?;
+        mac.update(b"vod");
+        let k_service = mac.finalize().into_bytes();
+
+        let mut mac = HmacSha256::new_from_slice(&k_service)?;
+        mac.update(b"aws4_request");
+        Ok(mac.finalize().into_bytes().to_vec())
+    }
+
+    fn aws_vod_auth_headers(
+        method: &str,
+        query_params: &BTreeMap<String, String>,
+        access_key_id: &str,
+        secret_access_key: &str,
+        session_token: &str,
+        payload_hash: &str,
+        extra_signed_headers: BTreeMap<String, String>,
+    ) -> Result<(String, BTreeMap<String, String>)> {
+        let now = chrono::Utc::now();
+        let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
+        let date_stamp = now.format("%Y%m%d").to_string();
+        let token = session_token
+            .split_once('|')
+            .map(|(left, _)| left)
+            .unwrap_or(session_token);
+        let mut signed_header_values = BTreeMap::from([
+            ("x-amz-date".to_string(), amz_date.clone()),
+            ("x-amz-security-token".to_string(), token.to_string()),
+        ]);
+        for (key, value) in extra_signed_headers {
+            signed_header_values.insert(key.to_ascii_lowercase(), value);
+        }
+
+        let canonical_headers = signed_header_values
+            .iter()
+            .map(|(key, value)| format!("{}:{}\n", key, value.trim()))
+            .collect::<String>();
+        let signed_headers = signed_header_values
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(";");
+        let canonical_query = Self::aws_canonical_query(query_params);
+        let canonical_request = [
+            method.to_ascii_uppercase(),
+            "/".to_string(),
+            canonical_query.clone(),
+            canonical_headers,
+            signed_headers.clone(),
+            payload_hash.to_string(),
+        ]
+        .join("\n");
+        let credential_scope = format!("{date_stamp}/cn-north-1/vod/aws4_request");
+        let request_hash = Sha256::digest(canonical_request.as_bytes());
+        let string_to_sign = format!(
+            "AWS4-HMAC-SHA256\n{amz_date}\n{credential_scope}\n{:x}",
+            request_hash
+        );
+        let signing_key = Self::aws_signing_key(secret_access_key, &date_stamp)?;
+        let mut mac = HmacSha256::new_from_slice(&signing_key)?;
+        mac.update(string_to_sign.as_bytes());
+        let signature = format!("{:x}", mac.finalize().into_bytes());
+        let mut headers = BTreeMap::from([
+            (
+                "authorization".to_string(),
+                format!(
+                    "AWS4-HMAC-SHA256 Credential={access_key_id}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}"
+                ),
+            ),
+            ("x-amz-date".to_string(), amz_date),
+            ("x-amz-security-token".to_string(), token.to_string()),
+        ]);
+        for (key, value) in signed_header_values {
+            if key != "x-amz-date" && key != "x-amz-security-token" {
+                headers.insert(key, value);
+            }
+        }
+        Ok((canonical_query, headers))
     }
 
     async fn get_webid(&self, headers: &HashMap<String, String>) -> Option<String> {
@@ -2882,7 +2997,256 @@ impl DouyinClient {
             "text": message,
         })
         .to_string();
-        self.send_im_content_message(to_user_id, msg_content).await
+        self.send_im_content_message(to_user_id, msg_content, 7)
+            .await
+    }
+
+    async fn get_im_image_upload_config(&self) -> Result<serde_json::Value> {
+        let mut query_params = crate::config::get_common_params();
+        query_params.extend(HashMap::from([
+            ("update_version_code".to_string(), "170400".to_string()),
+            ("version_code".to_string(), "170400".to_string()),
+            ("version_name".to_string(), "17.4.0".to_string()),
+            ("browser_name".to_string(), "Chrome".to_string()),
+            ("browser_version".to_string(), "148.0.0.0".to_string()),
+            ("engine_version".to_string(), "148.0.0.0".to_string()),
+            ("round_trip_time".to_string(), "150".to_string()),
+        ]));
+        let mut headers = HashMap::from([
+            ("User-Agent".to_string(), "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36".to_string()),
+            ("Cookie".to_string(), self.config.cookie.clone()),
+            ("Referer".to_string(), "https://www.douyin.com/jingxuan".to_string()),
+            ("sec-fetch-site".to_string(), "same-origin".to_string()),
+            ("sec-ch-ua".to_string(), "\"Chromium\";v=\"148\", \"Google Chrome\";v=\"148\", \"Not/A)Brand\";v=\"99\"".to_string()),
+            ("accept".to_string(), "application/json, text/plain, */*".to_string()),
+        ]);
+        self.enrich_request(&mut query_params, &mut headers).await;
+        let params_str = serde_urlencoded::to_string(&query_params)?;
+        let user_agent = headers
+            .get("User-Agent")
+            .map(String::as_str)
+            .unwrap_or_else(|| get_user_agent());
+        query_params.insert(
+            "a_bogus".to_string(),
+            sign::sign_detail(&params_str, user_agent),
+        );
+
+        let mut req = self
+            .client
+            .get("https://www.douyin.com/aweme/v1/web/im/upload/config/v2")
+            .query(&query_params);
+        for (key, value) in &headers {
+            req = req.header(key, value);
+        }
+        let response = req.send().await?;
+        if !response.status().is_success() {
+            return Err(anyhow!(
+                "获取图片上传配置失败（HTTP {}）",
+                response.status()
+            ));
+        }
+        let value = response.json::<serde_json::Value>().await?;
+        let config = value
+            .get("public_image_config_v2")
+            .or_else(|| value.get("public_image_config"))
+            .cloned()
+            .ok_or_else(|| anyhow!("抖音未返回图片上传配置"))?;
+        for key in [
+            "access_key_id",
+            "secret_access_key",
+            "session_token",
+            "space_name",
+        ] {
+            if config
+                .get(key)
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .is_empty()
+            {
+                return Err(anyhow!("抖音未返回完整图片上传配置，请刷新 Cookie 后重试"));
+            }
+        }
+        Ok(config)
+    }
+
+    async fn apply_im_image_upload(
+        &self,
+        config: &serde_json::Value,
+        file_size: usize,
+    ) -> Result<serde_json::Value> {
+        let access_key_id = config["access_key_id"].as_str().unwrap_or_default();
+        let secret_access_key = config["secret_access_key"].as_str().unwrap_or_default();
+        let session_token = config["session_token"].as_str().unwrap_or_default();
+        let space_name = config["space_name"].as_str().unwrap_or_default();
+        let random: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(10)
+            .map(char::from)
+            .collect();
+        let query_params = BTreeMap::from([
+            ("Action".to_string(), "ApplyUploadInner".to_string()),
+            ("Version".to_string(), "2020-11-19".to_string()),
+            ("SpaceName".to_string(), space_name.to_string()),
+            ("FileType".to_string(), "image".to_string()),
+            ("IsInner".to_string(), "1".to_string()),
+            ("NeedFallback".to_string(), "true".to_string()),
+            ("FileSize".to_string(), file_size.to_string()),
+            ("s".to_string(), format!("r{}", random.to_ascii_lowercase())),
+        ]);
+        let empty_hash = format!("{:x}", Sha256::digest([]));
+        let (query, auth_headers) = Self::aws_vod_auth_headers(
+            "GET",
+            &query_params,
+            access_key_id,
+            secret_access_key,
+            session_token,
+            &empty_hash,
+            BTreeMap::new(),
+        )?;
+        let mut req = self
+            .client
+            .get(format!("https://vod.bytedanceapi.com/?{query}"))
+            .header("accept", "*/*")
+            .header("origin", "https://www.douyin.com")
+            .header("referer", "https://www.douyin.com/")
+            .header("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36");
+        for (key, value) in auth_headers {
+            req = req.header(key, value);
+        }
+        let response = req.send().await?;
+        let status = response.status();
+        let value = response.json::<serde_json::Value>().await?;
+        if !status.is_success() || value.pointer("/ResponseMetadata/Error").is_some() {
+            return Err(anyhow!("申请图片上传失败"));
+        }
+        let upload_address = value
+            .pointer("/Result/UploadAddress")
+            .cloned()
+            .ok_or_else(|| anyhow!("申请图片上传成功但返回缺少上传地址"))?;
+        if upload_address
+            .get("SessionKey")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .is_empty()
+        {
+            return Err(anyhow!("申请图片上传成功但返回缺少 SessionKey"));
+        }
+        Ok(upload_address)
+    }
+
+    async fn upload_im_image_bytes(
+        &self,
+        upload_address: &serde_json::Value,
+        image_bytes: Vec<u8>,
+        crc32: &str,
+    ) -> Result<()> {
+        let store_info = upload_address
+            .get("StoreInfos")
+            .and_then(|value| value.as_array())
+            .and_then(|items| items.first())
+            .ok_or_else(|| anyhow!("图片上传地址不完整"))?;
+        let host = upload_address
+            .get("UploadHosts")
+            .and_then(|value| value.as_array())
+            .and_then(|items| items.first())
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let store_uri = store_info
+            .get("StoreUri")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let auth = store_info
+            .get("Auth")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        if host.is_empty() || store_uri.is_empty() || auth.is_empty() {
+            return Err(anyhow!("图片上传地址不完整"));
+        }
+        let mut req = self
+            .client
+            .post(format!("https://{host}/upload/v1/{store_uri}"))
+            .header("accept", "*/*")
+            .header("authorization", auth)
+            .header("content-crc32", crc32)
+            .header("content-disposition", "attachment; filename=\"undefined\"")
+            .header("content-type", "application/octet-stream")
+            .header("origin", "https://www.douyin.com")
+            .header("referer", "https://www.douyin.com/")
+            .header("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36");
+        if let Some(user_id) = store_info
+            .pointer("/StorageHeader/USER_ID")
+            .and_then(|value| value.as_str())
+        {
+            req = req.header("x-storage-u", user_id);
+        }
+        let response = req.body(image_bytes).send().await?;
+        let status = response.status();
+        let value = response.json::<serde_json::Value>().await?;
+        let code_ok = matches!(value.get("code"), Some(serde_json::Value::Number(n)) if n.as_i64() == Some(2000))
+            || matches!(value.get("code"), Some(serde_json::Value::String(s)) if s == "2000");
+        if !status.is_success() || !code_ok {
+            return Err(anyhow!("上传图片文件失败"));
+        }
+        Ok(())
+    }
+
+    async fn commit_im_image_upload(
+        &self,
+        config: &serde_json::Value,
+        session_key: &str,
+    ) -> Result<serde_json::Value> {
+        let access_key_id = config["access_key_id"].as_str().unwrap_or_default();
+        let secret_access_key = config["secret_access_key"].as_str().unwrap_or_default();
+        let session_token = config["session_token"].as_str().unwrap_or_default();
+        let space_name = config["space_name"].as_str().unwrap_or_default();
+        let query_params = BTreeMap::from([
+            ("Action".to_string(), "CommitUploadInner".to_string()),
+            ("Version".to_string(), "2020-11-19".to_string()),
+            ("SpaceName".to_string(), space_name.to_string()),
+        ]);
+        let body = serde_json::json!({
+            "SessionKey": session_key,
+            "Functions": [{
+                "name": "Encryption",
+                "input": {
+                    "Config": { "copies": "cipher_v2" },
+                    "PolicyParams": { "policy-set": "check,thumb,medium,large" }
+                }
+            }]
+        })
+        .to_string()
+        .into_bytes();
+        let body_hash = format!("{:x}", Sha256::digest(&body));
+        let (query, auth_headers) = Self::aws_vod_auth_headers(
+            "POST",
+            &query_params,
+            access_key_id,
+            secret_access_key,
+            session_token,
+            &body_hash,
+            BTreeMap::from([("x-amz-content-sha256".to_string(), body_hash.clone())]),
+        )?;
+        let mut req = self
+            .client
+            .post(format!("https://vod.bytedanceapi.com/?{query}"))
+            .header("accept", "*/*")
+            .header("content-type", "text/plain;charset=UTF-8")
+            .header("origin", "https://www.douyin.com")
+            .header("referer", "https://www.douyin.com/")
+            .header("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36");
+        for (key, value) in auth_headers {
+            req = req.header(key, value);
+        }
+        let response = req.body(body).send().await?;
+        let status = response.status();
+        let value = response.json::<serde_json::Value>().await?;
+        if !status.is_success() || value.pointer("/ResponseMetadata/Error").is_some() {
+            return Err(anyhow!("提交图片上传失败"));
+        }
+        value
+            .pointer("/Result/Results/0")
+            .cloned()
+            .ok_or_else(|| anyhow!("提交图片上传成功但未返回资源信息"))
     }
 
     pub async fn send_im_image_message(
@@ -2891,8 +3255,8 @@ impl DouyinClient {
         image_data_url: &str,
         width: i64,
         height: i64,
-        file_name: &str,
-        mime_type: &str,
+        _file_name: &str,
+        _mime_type: &str,
     ) -> Result<serde_json::Value> {
         let trimmed = image_data_url.trim();
         if trimmed.is_empty() {
@@ -2906,47 +3270,84 @@ impl DouyinClient {
         if inline_pic.is_empty() {
             return Err(anyhow!("图片内容不能为空"));
         }
-        let width = width.max(0);
-        let height = height.max(0);
+        let image_bytes = base64::engine::general_purpose::STANDARD
+            .decode(inline_pic.as_bytes())
+            .map_err(|_| anyhow!("图片数据解析失败"))?;
+        if image_bytes.is_empty() {
+            return Err(anyhow!("图片内容不能为空"));
+        }
+        let source_md5 = format!("{:x}", md5::compute(&image_bytes));
+        let crc32 = crc32_hex(&image_bytes);
+        let data_size = image_bytes.len();
+        let config = self.get_im_image_upload_config().await?;
+        let upload_address = self.apply_im_image_upload(&config, data_size).await?;
+        self.upload_im_image_bytes(&upload_address, image_bytes, &crc32)
+            .await?;
+        let session_key = upload_address
+            .get("SessionKey")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let commit_result = self.commit_im_image_upload(&config, session_key).await?;
+        let encryption = commit_result
+            .get("Encryption")
+            .ok_or_else(|| anyhow!("提交图片上传成功但未返回加密资源信息"))?;
+        let oid = encryption
+            .get("Uri")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let skey = encryption
+            .get("SecretKey")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        if oid.is_empty() || skey.is_empty() {
+            return Err(anyhow!("图片上传完成但缺少资源 oid/skey"));
+        }
+        let extra = encryption.get("Extra").and_then(|value| value.as_object());
+        let cover_width = extra
+            .and_then(|extra| extra.get("img_width"))
+            .and_then(|value| value.as_str())
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(width.max(0));
+        let cover_height = extra
+            .and_then(|extra| extra.get("img_height"))
+            .and_then(|value| value.as_str())
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(height.max(0));
+        let uploaded_size = extra
+            .and_then(|extra| extra.get("img_size"))
+            .and_then(|value| value.as_str())
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(data_size);
+        let sent_md5 = encryption
+            .get("SourceMd5")
+            .and_then(|value| value.as_str())
+            .unwrap_or(&source_md5);
         let msg_content = serde_json::json!({
-            "aweType": 2702,
-            "cover_width": width,
-            "cover_height": height,
-            "width": width,
-            "height": height,
-            "inline_pic": inline_pic,
-            "file_name": file_name,
-            "mime_type": mime_type,
-            "is_aigc": false,
-            "is_card": false,
-            "is_long_pic": false,
-            "msgHint": "",
-            "quote_message_id": 0,
-            "ref_msg_info": {
-                "comment": ""
-            },
             "resource_url": {
-                "url_list": [],
-                "origin_url_list": [],
-                "large_url_list": [],
-                "medium_url_list": [],
-                "thumb_url_list": [],
-                "width": width,
-                "height": height,
-                "data_size": inline_pic.len()
-            }
+                "oid": oid,
+                "skey": skey,
+                "data_size": uploaded_size,
+                "md5": sent_md5,
+            },
+            "cover_height": cover_height,
+            "cover_width": cover_width,
+            "check_pics": [],
+            "md5": sent_md5,
+            "from_gallery": 1,
+            "aweType": 2702,
         })
         .to_string();
-        self.send_im_content_message(to_user_id, msg_content).await
+        self.send_im_content_message(to_user_id, msg_content, 27)
+            .await
     }
 
     async fn send_im_content_message(
         &self,
         to_user_id: &str,
         msg_content: String,
+        message_type: i64,
     ) -> Result<serde_json::Value> {
         let conversation = self.create_im_conversation(to_user_id).await?;
-        let signer = self.im_proto_signer()?;
         let client_message_id = Uuid::new_v4().to_string();
         let conversation_id = conversation
             .get("conversation_id")
@@ -2960,10 +3361,6 @@ impl DouyinClient {
             .get("ticket")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
-        let sign_data = format!(
-            "content={msg_content}&conversation_id={conversation_id}&conversation_short_id={conversation_short_id}"
-        );
-        let request_sign = Self::ecdsa_request_sign(&sign_data, &signer.private_key)?;
         let now_ms = chrono::Utc::now().timestamp_millis();
         let body = im_proto::build_send_message_body(
             conversation_id,
@@ -2972,14 +3369,9 @@ impl DouyinClient {
             &msg_content,
             &client_message_id,
             now_ms,
+            message_type,
         );
-        let payload = self.build_im_proto_request(
-            100,
-            &body,
-            &request_sign,
-            "1.1.3",
-            "5fa6ff1:Detached: 5fa6ff1111fd53aafc4c753505d3c93daad74d27",
-        )?;
+        let payload = self.build_im_pc_proto_request(100, &body)?;
         let response = self
             .post_im_proto("https://imapi.douyin.com/v1/message/send", payload, true)
             .await?;
@@ -3821,8 +4213,8 @@ impl DouyinClient {
         );
         log::info!(
             "Douyin profile/self current user parsed: uid_present={} sec_uid_present={} avatar_thumb_present={} avatar_medium_present={} avatar_larger_present={}",
-            data["uid"].as_str().unwrap_or_default().is_empty() == false,
-            data["sec_uid"].as_str().unwrap_or_default().is_empty() == false,
+            !data["uid"].as_str().unwrap_or_default().is_empty(),
+            !data["sec_uid"].as_str().unwrap_or_default().is_empty(),
             !avatar_thumb.is_empty(),
             !avatar_medium.is_empty(),
             !avatar_larger.is_empty(),

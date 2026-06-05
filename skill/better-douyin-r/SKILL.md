@@ -1,9 +1,9 @@
 ---
-name: "douyin-downloader"
+name: "better-douyin-r"
 description: "Download Douyin videos, parse video metadata, search users, and manage the downloader config via the douyin-dl CLI. Use when the user wants to download a Douyin video, inspect video info, or manage download settings."
 ---
 
-# Douyin Downloader Skill
+# better-douyin-R Skill
 
 This skill wraps the `douyin-dl` CLI — a Rust binary that talks to Douyin APIs for parsing video links, downloading videos, searching users, and managing configuration.
 
@@ -104,7 +104,7 @@ douyin-dl config set filename_template "{author}_{title}"
 
 Supported config keys: `cookie`, `download_path`, `proxy`, `max_concurrent`, `download_quality` (auto/highest/h264/smallest), `filename_template`, `folder_name_template`, `auto_create_folder`, `save_metadata`, `theme`, `language`.
 
-The config file is at `~/Library/Application Support/douyin-downloader/config.json` (macOS) or equivalent platform dir. It is shared with the Tauri desktop app.
+The config file is at `~/Library/Application Support/better-douyin-R/config.json` (macOS) or equivalent platform dir. It is shared with the Tauri desktop app.
 
 ### Search users
 

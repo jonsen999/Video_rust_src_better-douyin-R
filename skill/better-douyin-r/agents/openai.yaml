@@ -1,5 +1,5 @@
 interface:
-  display_name: "Douyin Downloader"
+  display_name: "better-douyin-R"
   short_description: "Download Douyin videos, parse metadata, search users, and manage config via douyin-dl CLI"
-  icon_large: "./assets/douyin-downloader.png"
+  icon_large: "./assets/better-douyin-r.png"
   default_prompt: "Use the douyin-dl CLI to help the user download Douyin videos, parse video URLs for metadata, search for users, or manage download configuration. The CLI binary must be built first with `cargo build --release --bin douyin-dl` from the src-tauri directory."

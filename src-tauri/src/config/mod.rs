@@ -201,7 +201,7 @@ impl AppConfig {
     fn config_path() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("douyin-downloader")
+            .join("better-douyin-R")
             .join("config.json")
     }
 }

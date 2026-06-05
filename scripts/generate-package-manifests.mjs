@@ -30,10 +30,10 @@ function writeGenerated(relativePath, content) {
 
 const replacements = {
   '{{VERSION}}': version,
-  '{{SHA256_DMG_ARM64}}': sha256(`Douyin-Downloader-v${version}-macos-arm64.dmg`),
-  '{{SHA256_DMG_X64}}': sha256(`Douyin-Downloader-v${version}-macos-x64.dmg`),
-  '{{SHA256_WINDOWS_INSTALLER}}': sha256(`Douyin-Downloader-v${version}-windows-x64-installer.exe`).toUpperCase(),
-  '{{SHA256_WINDOWS_PORTABLE}}': sha256(`Douyin-Downloader-v${version}-windows-x64-portable.zip`)
+  '{{SHA256_DMG_ARM64}}': sha256(`better-douyin-R-v${version}-macos-arm64.dmg`),
+  '{{SHA256_DMG_X64}}': sha256(`better-douyin-R-v${version}-macos-x64.dmg`),
+  '{{SHA256_WINDOWS_INSTALLER}}': sha256(`better-douyin-R-v${version}-windows-x64-installer.exe`).toUpperCase(),
+  '{{SHA256_WINDOWS_PORTABLE}}': sha256(`better-douyin-R-v${version}-windows-x64-portable.zip`)
 };
 
 function applyReplacements(content) {
@@ -44,11 +44,11 @@ function applyReplacements(content) {
 }
 
 const files = [
-  ['homebrew/douyin-downloader.rb', 'homebrew/douyin-downloader.rb'],
-  ['scoop/douyin-downloader.json', 'scoop/douyin-downloader.json'],
-  ['winget/AnYuJia.DouyinDownloader/AnYuJia.DouyinDownloader.yaml', 'winget/AnYuJia.DouyinDownloader.yaml'],
-  ['winget/AnYuJia.DouyinDownloader/AnYuJia.DouyinDownloader.locale.zh-CN.yaml', 'winget/AnYuJia.DouyinDownloader.locale.zh-CN.yaml'],
-  ['winget/AnYuJia.DouyinDownloader/AnYuJia.DouyinDownloader.installer.yaml', 'winget/AnYuJia.DouyinDownloader.installer.yaml']
+  ['homebrew/better-douyin-r.rb', 'homebrew/better-douyin-r.rb'],
+  ['scoop/better-douyin-r.json', 'scoop/better-douyin-r.json'],
+  ['winget/AnYuJia.BetterDouyinR/AnYuJia.BetterDouyinR.yaml', 'winget/AnYuJia.BetterDouyinR.yaml'],
+  ['winget/AnYuJia.BetterDouyinR/AnYuJia.BetterDouyinR.locale.zh-CN.yaml', 'winget/AnYuJia.BetterDouyinR.locale.zh-CN.yaml'],
+  ['winget/AnYuJia.BetterDouyinR/AnYuJia.BetterDouyinR.installer.yaml', 'winget/AnYuJia.BetterDouyinR.installer.yaml']
 ];
 
 for (const [templatePath, outputPath] of files) {

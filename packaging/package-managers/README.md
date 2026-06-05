@@ -13,10 +13,10 @@ Recommended order:
 
 | Channel | Asset |
 |:---|:---|
-| Homebrew Cask arm64 | `Douyin-Downloader-v{{VERSION}}-macos-arm64.dmg` |
-| Homebrew Cask x64 | `Douyin-Downloader-v{{VERSION}}-macos-x64.dmg` |
-| Scoop | `Douyin-Downloader-v{{VERSION}}-windows-x64-portable.zip` |
-| winget installer | `Douyin-Downloader-v{{VERSION}}-windows-x64-installer.exe` |
+| Homebrew Cask arm64 | `better-douyin-R-v{{VERSION}}-macos-arm64.dmg` |
+| Homebrew Cask x64 | `better-douyin-R-v{{VERSION}}-macos-x64.dmg` |
+| Scoop | `better-douyin-R-v{{VERSION}}-windows-x64-portable.zip` |
+| winget installer | `better-douyin-R-v{{VERSION}}-windows-x64-installer.exe` |
 
 ## Hashes
 
@@ -24,7 +24,7 @@ Download the release assets:
 
 ```bash
 VERSION=v0.0.12
-gh release download "$VERSION" --pattern 'Douyin-Downloader-v*'
+gh release download "$VERSION" --pattern 'better-douyin-R-v*'
 ```
 
 Then generate version-pinned manifests:
@@ -37,15 +37,15 @@ The script computes SHA-256 hashes and writes files under `generated/<version>/`
 
 The templates with placeholders are:
 
-- `homebrew/douyin-downloader.rb`
-- `scoop/douyin-downloader.json`
-- `winget/AnYuJia.DouyinDownloader/*.yaml`
+- `homebrew/better-douyin-r.rb`
+- `scoop/better-douyin-r.json`
+- `winget/AnYuJia.BetterDouyinR/*.yaml`
 
 Generated, version-pinned manifests are stored under `generated/<version>/` after a release has been published and hashes have been verified.
 
 ## Notes
 
-- Homebrew Cask usually belongs in `homebrew-cask/Casks/d/douyin-downloader.rb`.
+- Homebrew Cask usually belongs in `homebrew-cask/Casks/b/better-douyin-r.rb`.
 - Scoop can be maintained in a custom bucket first, then submitted to a public bucket if desired.
-- winget manifests are normally submitted to `microsoft/winget-pkgs` under `manifests/a/AnYuJia/DouyinDownloader/{{VERSION}}/`.
+- winget manifests are normally submitted to `microsoft/winget-pkgs` under `manifests/a/AnYuJia/BetterDouyinR/{{VERSION}}/`.
 - Store submission can be done after one stable release has been verified manually.
