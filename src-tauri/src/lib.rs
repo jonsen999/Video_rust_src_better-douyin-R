@@ -200,7 +200,15 @@ fn sanitize_friend_chat_message(value: Option<&serde_json::Value>) -> Option<ser
         .and_then(|value| value.as_str())
         .unwrap_or_default()
         .trim();
-    if text.is_empty() {
+    let raw_content = object
+        .get("rawContent")
+        .or_else(|| object.get("raw_content"))
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .chars()
+        .take(50000)
+        .collect::<String>();
+    if text.is_empty() && raw_content.is_empty() {
         return None;
     }
     let created_at = coerce_i64(
@@ -234,14 +242,23 @@ fn sanitize_friend_chat_message(value: Option<&serde_json::Value>) -> Option<ser
         .chars()
         .take(80)
         .collect::<String>();
-    Some(serde_json::json!({
+    let mut message = serde_json::json!({
         "id": id,
-        "text": text.chars().take(1000).collect::<String>(),
+        "text": if text.is_empty() { "[分享内容]".to_string() } else { text.chars().take(1000).collect::<String>() },
         "createdAt": created_at,
         "status": status,
         "direction": direction,
         "senderUid": sender_uid,
-    }))
+    });
+    if !raw_content.is_empty() {
+        if let Some(object) = message.as_object_mut() {
+            object.insert(
+                "rawContent".to_string(),
+                serde_json::Value::String(raw_content),
+            );
+        }
+    }
+    Some(message)
 }
 
 fn sanitize_friend_chat_state(value: serde_json::Value) -> serde_json::Value {
@@ -2442,6 +2459,66 @@ async fn send_friend_message(
     }
 }
 
+/// 发送图片私信。
+#[tauri::command]
+async fn send_friend_image_message(
+    state: State<'_, AppState>,
+    to_user_id: Option<String>,
+    uid: Option<String>,
+    image_data_url: Option<String>,
+    image_data: Option<String>,
+    width: Option<i64>,
+    height: Option<i64>,
+    file_name: Option<String>,
+    mime_type: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let to_user_id = to_user_id.or(uid).unwrap_or_default();
+    if to_user_id.trim().is_empty() {
+        return Ok(serde_json::json!({
+            "success": false,
+            "message": "缺少好友数字 uid，无法发送图片"
+        }));
+    }
+    let image_data_url = image_data_url.or(image_data).unwrap_or_default();
+    if image_data_url.trim().is_empty() {
+        return Ok(serde_json::json!({
+            "success": false,
+            "message": "图片内容不能为空"
+        }));
+    }
+    if image_data_url.len() > 12 * 1024 * 1024 {
+        return Ok(serde_json::json!({
+            "success": false,
+            "message": "图片不能超过 8MB"
+        }));
+    }
+    let client = match get_client(&state).await {
+        Ok(client) => client,
+        Err(_) => return Ok(cookie_required_response()),
+    };
+    ensure_im_message_listener(state.inner(), client.clone()).await;
+    match client
+        .send_im_image_message(
+            &to_user_id,
+            &image_data_url,
+            width.unwrap_or_default(),
+            height.unwrap_or_default(),
+            file_name.as_deref().unwrap_or_default(),
+            mime_type.as_deref().unwrap_or_default(),
+        )
+        .await
+    {
+        Ok(result) => Ok(json_object_with_success(result)),
+        Err(error) => Ok(api_login_or_verify_error_response(
+            &client,
+            "发送图片私信失败",
+            error,
+            "https://www.douyin.com/",
+        )
+        .await),
+    }
+}
+
 /// 获取最近的 IM 历史消息。
 #[tauri::command]
 async fn get_friend_message_history(
@@ -4218,6 +4295,7 @@ pub fn run() {
             get_liked_authors,
             get_friend_online_status,
             send_friend_message,
+            send_friend_image_message,
             get_friend_message_history,
             get_friend_chat_state,
             save_friend_chat_state,

@@ -1291,6 +1291,13 @@ impl DouyinClient {
         self.get_first_url_opt(data).unwrap_or_default()
     }
 
+    fn get_avatar_url(&self, data: &serde_json::Value, keys: &[&str]) -> String {
+        keys.iter()
+            .filter_map(|key| data.get(*key))
+            .find_map(|value| self.get_first_url_opt(value))
+            .unwrap_or_default()
+    }
+
     fn json_boolish_any(data: &serde_json::Value, keys: &[&str]) -> bool {
         keys.iter()
             .filter_map(|key| data.get(*key))
@@ -2868,9 +2875,6 @@ impl DouyinClient {
         if message.is_empty() {
             return Err(anyhow!("消息内容不能为空"));
         }
-        let conversation = self.create_im_conversation(to_user_id).await?;
-        let signer = self.im_proto_signer()?;
-        let client_message_id = Uuid::new_v4().to_string();
         let msg_content = serde_json::json!({
             "mention_users": [],
             "aweType": 700,
@@ -2878,6 +2882,72 @@ impl DouyinClient {
             "text": message,
         })
         .to_string();
+        self.send_im_content_message(to_user_id, msg_content).await
+    }
+
+    pub async fn send_im_image_message(
+        &self,
+        to_user_id: &str,
+        image_data_url: &str,
+        width: i64,
+        height: i64,
+        file_name: &str,
+        mime_type: &str,
+    ) -> Result<serde_json::Value> {
+        let trimmed = image_data_url.trim();
+        if trimmed.is_empty() {
+            return Err(anyhow!("图片内容不能为空"));
+        }
+        let inline_pic = trimmed
+            .split_once(',')
+            .map(|(_, payload)| payload)
+            .unwrap_or(trimmed)
+            .replace(['\r', '\n', ' '], "");
+        if inline_pic.is_empty() {
+            return Err(anyhow!("图片内容不能为空"));
+        }
+        let width = width.max(0);
+        let height = height.max(0);
+        let msg_content = serde_json::json!({
+            "aweType": 2702,
+            "cover_width": width,
+            "cover_height": height,
+            "width": width,
+            "height": height,
+            "inline_pic": inline_pic,
+            "file_name": file_name,
+            "mime_type": mime_type,
+            "is_aigc": false,
+            "is_card": false,
+            "is_long_pic": false,
+            "msgHint": "",
+            "quote_message_id": 0,
+            "ref_msg_info": {
+                "comment": ""
+            },
+            "resource_url": {
+                "url_list": [],
+                "origin_url_list": [],
+                "large_url_list": [],
+                "medium_url_list": [],
+                "thumb_url_list": [],
+                "width": width,
+                "height": height,
+                "data_size": inline_pic.len()
+            }
+        })
+        .to_string();
+        self.send_im_content_message(to_user_id, msg_content).await
+    }
+
+    async fn send_im_content_message(
+        &self,
+        to_user_id: &str,
+        msg_content: String,
+    ) -> Result<serde_json::Value> {
+        let conversation = self.create_im_conversation(to_user_id).await?;
+        let signer = self.im_proto_signer()?;
+        let client_message_id = Uuid::new_v4().to_string();
         let conversation_id = conversation
             .get("conversation_id")
             .and_then(|value| value.as_str())
@@ -3545,9 +3615,26 @@ impl DouyinClient {
                 } else {
                     user.uid.clone()
                 }),
-                avatar_thumb: Some(user.avatar_thumb),
-                avatar_medium: Some(user.avatar_medium),
-                avatar_larger: Some(user.avatar_larger),
+                sec_uid: if user.sec_uid.is_empty() {
+                    None
+                } else {
+                    Some(user.sec_uid)
+                },
+                avatar_thumb: if user.avatar_thumb.is_empty() {
+                    None
+                } else {
+                    Some(user.avatar_thumb)
+                },
+                avatar_medium: if user.avatar_medium.is_empty() {
+                    None
+                } else {
+                    Some(user.avatar_medium)
+                },
+                avatar_larger: if user.avatar_larger.is_empty() {
+                    None
+                } else {
+                    Some(user.avatar_larger)
+                },
                 expires_at: None,
                 message: "Cookie 有效".to_string(),
             }),
@@ -3561,6 +3648,7 @@ impl DouyinClient {
                                 valid: false,
                                 user_name: None,
                                 user_id: None,
+                                sec_uid: None,
                                 avatar_thumb: None,
                                 avatar_medium: None,
                                 avatar_larger: None,
@@ -3581,6 +3669,7 @@ impl DouyinClient {
                         valid: false,
                         user_name: None,
                         user_id: None,
+                        sec_uid: None,
                         avatar_thumb: None,
                         avatar_medium: None,
                         avatar_larger: None,
@@ -3596,6 +3685,7 @@ impl DouyinClient {
                     valid: false,
                     user_name: None,
                     user_id: None,
+                    sec_uid: None,
                     avatar_thumb: None,
                     avatar_medium: None,
                     avatar_larger: None,
@@ -3652,10 +3742,19 @@ impl DouyinClient {
 
     /// 获取当前用户信息 (需要登录)
     pub async fn get_current_user(&self) -> Result<UserInfo> {
-        if let Ok(user) = self.get_current_user_from_query_user().await {
-            return Ok(user);
+        match self.get_current_user_from_profile_self().await {
+            Ok(user) => Ok(user),
+            Err(profile_error) => {
+                log::warn!(
+                    "Douyin profile/self current user lookup failed: {}",
+                    profile_error
+                );
+                self.get_current_user_from_query_user().await
+            }
         }
+    }
 
+    async fn get_current_user_from_profile_self(&self) -> Result<UserInfo> {
         let response = self
             .request_raw_json_with_options(
                 "https://www.douyin.com/aweme/v1/web/user/profile/self/",
@@ -3677,14 +3776,64 @@ impl DouyinClient {
 
         let data = response
             .get("user")
+            .or_else(|| response.pointer("/data/user"))
+            .or_else(|| {
+                response.get("data").filter(|value| {
+                    value.get("uid").is_some()
+                        || value.get("sec_uid").is_some()
+                        || value.get("user_id").is_some()
+                })
+            })
             .ok_or_else(|| anyhow!("No user in response"))?;
+
+        let avatar_thumb = self.get_avatar_url(
+            data,
+            &[
+                "avatar_thumb",
+                "avatar_100x100",
+                "avatar_168x168",
+                "avatar_medium",
+                "avatar_300x300",
+                "avatar_larger",
+            ],
+        );
+        let avatar_medium = self.get_avatar_url(
+            data,
+            &[
+                "avatar_medium",
+                "avatar_168x168",
+                "avatar_300x300",
+                "avatar_larger",
+                "avatar_thumb",
+                "avatar_100x100",
+            ],
+        );
+        let avatar_larger = self.get_avatar_url(
+            data,
+            &[
+                "avatar_larger",
+                "avatar_300x300",
+                "avatar_medium",
+                "avatar_168x168",
+                "avatar_thumb",
+                "avatar_100x100",
+            ],
+        );
+        log::info!(
+            "Douyin profile/self current user parsed: uid_present={} sec_uid_present={} avatar_thumb_present={} avatar_medium_present={} avatar_larger_present={}",
+            data["uid"].as_str().unwrap_or_default().is_empty() == false,
+            data["sec_uid"].as_str().unwrap_or_default().is_empty() == false,
+            !avatar_thumb.is_empty(),
+            !avatar_medium.is_empty(),
+            !avatar_larger.is_empty(),
+        );
 
         Ok(UserInfo {
             uid: data["uid"].as_str().unwrap_or_default().to_string(),
             nickname: data["nickname"].as_str().unwrap_or_default().to_string(),
-            avatar_thumb: self.get_first_url(&data["avatar_thumb"]["url_list"]),
-            avatar_medium: self.get_first_url(&data["avatar_medium"]["url_list"]),
-            avatar_larger: self.get_first_url(&data["avatar_larger"]["url_list"]),
+            avatar_thumb,
+            avatar_medium,
+            avatar_larger,
             signature: data["signature"].as_str().unwrap_or_default().to_string(),
             follower_count: data["follower_count"].as_i64().unwrap_or(0),
             following_count: data["following_count"].as_i64().unwrap_or(0),

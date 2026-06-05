@@ -396,6 +396,7 @@ pub struct CookieStatus {
     pub valid: bool,
     pub user_name: Option<String>,
     pub user_id: Option<String>,
+    pub sec_uid: Option<String>,
     pub avatar_thumb: Option<String>,
     pub avatar_medium: Option<String>,
     pub avatar_larger: Option<String>,
