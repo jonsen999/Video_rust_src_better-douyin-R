@@ -8,6 +8,7 @@ import type {
   AppConfig,
   ApiResponse,
   BitRateInfo,
+  CommentDiggResponse,
   CommentsResponse,
   CookieStatus,
   CollectedMixItem,
@@ -23,6 +24,7 @@ import type {
   LikedVideosResponse,
   LinkParseResponse,
   MixVideosResponse,
+  PublishCommentResponse,
   RecommendedResponse,
   SearchUserResponse,
   SendFriendMessageResponse,
@@ -110,22 +112,14 @@ function emitCookieInvalidIfNeeded(payload: unknown) {
   if (data.security_blocked) return;
   const message = String(data.message || "Cookie 已失效，请重新登录").trim();
   if (/请先设置\s*Cookie/i.test(message)) return;
-  const failedWithLoginMessage = data.success === false && isCookieInvalidMessage(message);
-  if (!data.need_login && !failedWithLoginMessage) return;
+  if (data.need_login !== true) return;
 
   window.dispatchEvent(new CustomEvent("dy-cookie-invalid", { detail: { message } }));
 }
 
 function emitCookieInvalidFromError(error: unknown) {
-  const message = getErrorMessage(error, "");
-  if (!message) return;
-  if (/请先设置\s*Cookie/i.test(message)) return;
-  if (!isCookieInvalidMessage(message)) return;
-  window.dispatchEvent(new CustomEvent("dy-cookie-invalid", { detail: { message } }));
-}
-
-function isCookieInvalidMessage(message: string) {
-  return /用户未登录|未登录|请先登录|请先设置\s*Cookie|登录态|重新登录|not login|not logged in|login required|session expired/i.test(message);
+  if (!error || typeof error !== "object") return;
+  emitCookieInvalidIfNeeded(error);
 }
 
 let browserSocket: BrowserSocket | null = null;
@@ -1149,6 +1143,36 @@ export async function getCommentReplies(
     });
   }
   return invoke("get_comment_replies", { awemeId, commentId, count, cursor });
+}
+
+export async function setCommentLiked(
+  awemeId: string,
+  commentId: string,
+  liked: boolean,
+  level = 1
+): Promise<CommentDiggResponse> {
+  if (shouldUseBrowserBridge()) {
+    return requestJson("/api/comment_digg", {
+      method: "POST",
+      body: JSON.stringify({ aweme_id: awemeId, comment_id: commentId, liked, level }),
+    });
+  }
+  return invoke("set_comment_liked", { awemeId, commentId, liked, level });
+}
+
+export async function publishComment(
+  awemeId: string,
+  text: string,
+  replyId = "",
+  replyToReplyId = ""
+): Promise<PublishCommentResponse> {
+  if (shouldUseBrowserBridge()) {
+    return requestJson("/api/comment_publish", {
+      method: "POST",
+      body: JSON.stringify({ aweme_id: awemeId, text, reply_id: replyId, reply_to_reply_id: replyToReplyId }),
+    });
+  }
+  return invoke("publish_comment", { awemeId, text, replyId, replyToReplyId });
 }
 
 export async function getFriendOnlineStatus(

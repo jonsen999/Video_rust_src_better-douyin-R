@@ -149,6 +149,7 @@ pub struct CommentInfo {
     pub create_time: i64,
     pub user: CommentUser,
     pub digg_count: i64,
+    pub user_digged: i32,
     pub reply_comment_total: i64,
     pub sub_comments: Option<Vec<CommentInfo>>,
     pub status: i32,

@@ -2720,12 +2720,223 @@ impl DouyinClient {
                 sec_uid: user["sec_uid"].as_str().unwrap_or_default().to_string(),
             },
             digg_count: data["digg_count"].as_i64().unwrap_or(0),
+            user_digged: data["user_digged"].as_i64().unwrap_or(0) as i32,
             reply_comment_total: data["reply_comment_total"].as_i64().unwrap_or(0),
             sub_comments: None,
             status: data["status"].as_i64().unwrap_or(0) as i32,
             ip_label: data["ip_label"].as_str().unwrap_or_default().to_string(),
             sticker_url,
         })
+    }
+
+    pub async fn set_comment_liked(
+        &self,
+        aweme_id: &str,
+        comment_id: &str,
+        liked: bool,
+        level: u32,
+    ) -> Result<serde_json::Value> {
+        let aweme_id = aweme_id.trim();
+        let comment_id = comment_id.trim();
+        if aweme_id.is_empty() {
+            return Err(anyhow!("作品ID不能为空"));
+        }
+        if comment_id.is_empty() {
+            return Err(anyhow!("评论ID不能为空"));
+        }
+
+        let url = "https://www-hj.douyin.com/aweme/v1/web/comment/digg";
+        let mut query_params = crate::config::get_common_params();
+        query_params.insert("cid".to_string(), comment_id.to_string());
+        query_params.insert("aweme_id".to_string(), aweme_id.to_string());
+        query_params.insert("digg_type".to_string(), if liked { "1" } else { "2" }.to_string());
+        query_params.insert("channel_id".to_string(), "0".to_string());
+        query_params.insert("app_name".to_string(), "aweme".to_string());
+        query_params.insert("item_type".to_string(), "0".to_string());
+        query_params.insert("level".to_string(), level.max(1).to_string());
+        query_params.insert("enter_from".to_string(), "discover".to_string());
+        query_params.insert("previous_page".to_string(), "discover".to_string());
+        query_params.insert("update_version_code".to_string(), "170400".to_string());
+        query_params.insert("version_code".to_string(), "170400".to_string());
+        query_params.insert("version_name".to_string(), "17.4.0".to_string());
+        query_params.insert("browser_name".to_string(), "Chrome".to_string());
+        query_params.insert("browser_version".to_string(), "148.0.0.0".to_string());
+        query_params.insert("engine_version".to_string(), "148.0.0.0".to_string());
+        query_params.insert("device_memory".to_string(), "16".to_string());
+
+        let mut headers = crate::config::get_common_headers(&self.config.cookie);
+        headers.extend(self.relation_ticket_guard_headers("/aweme/v1/web/comment/digg"));
+        headers.insert("Referer".to_string(), "https://www.douyin.com/".to_string());
+        headers.insert("Origin".to_string(), "https://www.douyin.com".to_string());
+        headers.insert("sec-fetch-site".to_string(), "same-site".to_string());
+        headers.insert("sec-fetch-mode".to_string(), "cors".to_string());
+        headers.insert("sec-fetch-dest".to_string(), "empty".to_string());
+        headers.insert("priority".to_string(), "u=1, i".to_string());
+        headers.insert("x-secsdk-csrf-token".to_string(), "DOWNGRADE".to_string());
+        headers.insert(
+            "Content-Type".to_string(),
+            "application/x-www-form-urlencoded; charset=UTF-8".to_string(),
+        );
+        headers.insert(
+            "User-Agent".to_string(),
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36".to_string(),
+        );
+        headers.insert(
+            "sec-ch-ua".to_string(),
+            "\"Chromium\";v=\"148\", \"Google Chrome\";v=\"148\", \"Not/A)Brand\";v=\"99\""
+                .to_string(),
+        );
+        if let Some(dtrait) = self.relation_dtrait() {
+            headers.insert("x-tt-session-dtrait".to_string(), dtrait);
+        }
+
+        self.enrich_request(&mut query_params, &mut headers).await;
+        let params_str = serde_urlencoded::to_string(&query_params)?;
+        let user_agent = headers
+            .get("User-Agent")
+            .map(String::as_str)
+            .unwrap_or_else(|| get_user_agent());
+        query_params.insert(
+            "a_bogus".to_string(),
+            sign::sign_detail(&params_str, user_agent),
+        );
+
+        let mut req = self.client.post(url).query(&query_params).body(String::new());
+        for (key, value) in &headers {
+            req = req.header(key, value);
+        }
+        let response = req
+            .send()
+            .await
+            .map_err(|error| anyhow!("HTTP request failed: {}", error))?;
+        if !response.status().is_success() {
+            return Err(anyhow!("HTTP error: {}", response.status()));
+        }
+        let response = response.json::<serde_json::Value>().await?;
+        let status_code = response["status_code"].as_i64().unwrap_or(0);
+        if status_code != 0 {
+            let status_msg = response["status_msg"]
+                .as_str()
+                .or_else(|| response["message"].as_str())
+                .unwrap_or("评论点赞失败");
+            return Err(anyhow!("评论点赞失败: {}", status_msg));
+        }
+        Ok(response)
+    }
+
+    pub async fn publish_comment(
+        &self,
+        aweme_id: &str,
+        text: &str,
+        reply_id: &str,
+        reply_to_reply_id: &str,
+    ) -> Result<(serde_json::Value, Option<CommentInfo>)> {
+        let aweme_id = aweme_id.trim();
+        let text = text.trim();
+        if aweme_id.is_empty() {
+            return Err(anyhow!("作品ID不能为空"));
+        }
+        if text.is_empty() {
+            return Err(anyhow!("评论内容不能为空"));
+        }
+
+        let url = "https://www.douyin.com/aweme/v1/web/comment/publish";
+        let mut query_params = crate::config::get_common_params();
+        query_params.insert("app_name".to_string(), "aweme".to_string());
+        query_params.insert("enter_from".to_string(), "discover".to_string());
+        query_params.insert("previous_page".to_string(), "discover".to_string());
+        query_params.insert("update_version_code".to_string(), "170400".to_string());
+        query_params.insert("version_code".to_string(), "170400".to_string());
+        query_params.insert("version_name".to_string(), "17.4.0".to_string());
+        query_params.insert("browser_name".to_string(), "Chrome".to_string());
+        query_params.insert("browser_version".to_string(), "148.0.0.0".to_string());
+        query_params.insert("engine_version".to_string(), "148.0.0.0".to_string());
+        query_params.insert("device_memory".to_string(), "16".to_string());
+
+        let mut body_params = HashMap::new();
+        body_params.insert("aweme_id".to_string(), aweme_id.to_string());
+        body_params.insert("text".to_string(), text.to_string());
+        body_params.insert("text_extra".to_string(), "[]".to_string());
+        body_params.insert("paste_edit_method".to_string(), "non_paste".to_string());
+        body_params.insert("comment_send_celltime".to_string(), "3000".to_string());
+        body_params.insert("comment_video_celltime".to_string(), "2000".to_string());
+        body_params.insert("one_level_comment_rank".to_string(), "1".to_string());
+        let reply_id = reply_id.trim();
+        if !reply_id.is_empty() {
+            body_params.insert("reply_id".to_string(), reply_id.to_string());
+            body_params.insert(
+                "reply_to_reply_id".to_string(),
+                if reply_to_reply_id.trim().is_empty() {
+                    "0".to_string()
+                } else {
+                    reply_to_reply_id.trim().to_string()
+                },
+            );
+        }
+
+        let mut headers = crate::config::get_common_headers(&self.config.cookie);
+        headers.extend(self.relation_ticket_guard_headers("/aweme/v1/web/comment/publish"));
+        headers.insert("Referer".to_string(), format!("https://www.douyin.com/video/{aweme_id}"));
+        headers.insert("Origin".to_string(), "https://www.douyin.com".to_string());
+        headers.insert("sec-fetch-site".to_string(), "same-origin".to_string());
+        headers.insert("sec-fetch-mode".to_string(), "cors".to_string());
+        headers.insert("sec-fetch-dest".to_string(), "empty".to_string());
+        headers.insert("priority".to_string(), "u=1, i".to_string());
+        headers.insert("x-secsdk-csrf-token".to_string(), "DOWNGRADE".to_string());
+        headers.insert(
+            "Content-Type".to_string(),
+            "application/x-www-form-urlencoded; charset=UTF-8".to_string(),
+        );
+        headers.insert(
+            "User-Agent".to_string(),
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36".to_string(),
+        );
+        headers.insert(
+            "sec-ch-ua".to_string(),
+            "\"Chromium\";v=\"148\", \"Google Chrome\";v=\"148\", \"Not/A)Brand\";v=\"99\""
+                .to_string(),
+        );
+        if let Some(dtrait) = self.relation_dtrait() {
+            headers.insert("x-tt-session-dtrait".to_string(), dtrait);
+        }
+
+        self.enrich_request(&mut query_params, &mut headers).await;
+        let params_str = serde_urlencoded::to_string(&query_params)?;
+        let user_agent = headers
+            .get("User-Agent")
+            .map(String::as_str)
+            .unwrap_or_else(|| get_user_agent());
+        query_params.insert(
+            "a_bogus".to_string(),
+            sign::sign_detail(&params_str, user_agent),
+        );
+
+        let mut req = self.client.post(url).query(&query_params).form(&body_params);
+        for (key, value) in &headers {
+            req = req.header(key, value);
+        }
+        let response = req
+            .send()
+            .await
+            .map_err(|error| anyhow!("HTTP request failed: {}", error))?;
+        if !response.status().is_success() {
+            return Err(anyhow!("HTTP error: {}", response.status()));
+        }
+        let response = response.json::<serde_json::Value>().await?;
+        let status_code = response["status_code"].as_i64().unwrap_or(0);
+        if status_code != 0 {
+            let status_msg = response["message"]
+                .as_str()
+                .or_else(|| response["status_msg"].as_str())
+                .or_else(|| response["prompts"].as_str())
+                .or_else(|| response["status_msg_extra"].as_str())
+                .unwrap_or("发表评论失败");
+            return Err(anyhow!("发表评论失败: {}", status_msg));
+        }
+        let comment = response
+            .get("comment")
+            .and_then(|value| self.parse_comment(value));
+        Ok((response, comment))
     }
 
     /// 解析分享链接
@@ -4682,7 +4893,7 @@ impl DouyinClient {
 
     /// 验证 Cookie 是否有效
     pub async fn verify_cookie(&self) -> Result<CookieStatus> {
-        match self.get_current_user().await {
+        match self.get_current_user_from_profile_self().await {
             Ok(user) => Ok(CookieStatus {
                 valid: true,
                 user_name: Some(user.nickname),
@@ -4717,6 +4928,20 @@ impl DouyinClient {
             Err(e) => {
                 let cookies = crate::cookie::parse_cookie_string(&self.config.cookie);
                 if crate::cookie::has_douyin_session_cookie(&cookies) {
+                    if looks_like_logged_out_error(&e.to_string()) {
+                        log::warn!("Douyin profile cookie check reports logged out: {}", e);
+                        return Ok(CookieStatus {
+                            valid: false,
+                            user_name: None,
+                            user_id: None,
+                            sec_uid: None,
+                            avatar_thumb: None,
+                            avatar_medium: None,
+                            avatar_larger: None,
+                            expires_at: None,
+                            message: "用户未登录，请在设置中重新登录并刷新 Cookie".to_string(),
+                        });
+                    }
                     match self.check_passport_account_expired().await {
                         Ok(Some(message)) => {
                             log::warn!("Douyin passport reports saved cookie expired: {}", message);

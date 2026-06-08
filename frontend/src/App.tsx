@@ -199,11 +199,21 @@ export default function App() {
           try {
             const status = await verifyCookie();
             if (disposed) return;
-            setCookieLoggedIn(status.valid, status.user_name || undefined);
-            if (status.valid) return;
+            if (status.valid) {
+              setCookieLoggedIn(true, status.user_name || undefined);
+              return;
+            }
+            if (status.need_verify && !status.need_login) {
+              useLogStore.getState().addLog(status.message || message, "warning");
+              return;
+            }
             showConfirmedCookieInvalid(status.message || message);
-          } catch {
-            if (!disposed) showConfirmedCookieInvalid(message);
+          } catch (error) {
+            if (!disposed) {
+              useLogStore
+                .getState()
+                .addLog(error instanceof Error ? error.message : "Cookie 状态暂时无法确认", "warning");
+            }
           }
         })();
       }, delay);
@@ -304,18 +314,19 @@ export default function App() {
               return;
             }
 
-            setCookieLoggedIn(status.valid, status.user_name || undefined);
-
             if (status.valid) {
+              setCookieLoggedIn(true, status.user_name || undefined);
               prefetchTimer = window.setTimeout(() => {
                 void useRecommendedStore.getState().loadFeed();
               }, 1200);
+            } else if (status.need_verify && !status.need_login) {
+              useLogStore.getState().addLog(status.message || "Cookie 需要完成验证", "warning");
             } else {
+              setCookieLoggedIn(false);
               useLogStore.getState().addLog(status.message || "Cookie 可能已失效", "warning");
             }
           } catch (error) {
             if (!disposed) {
-              setCookieLoggedIn(false);
               useLogStore
                 .getState()
                 .addLog(error instanceof Error ? error.message : "Cookie 校验失败", "warning");
@@ -324,9 +335,11 @@ export default function App() {
         } else {
           setCookieLoggedIn(false);
         }
-      } catch {
+      } catch (error) {
         if (!disposed) {
-          setCookieLoggedIn(false);
+          useLogStore
+            .getState()
+            .addLog(error instanceof Error ? error.message : "读取配置失败", "warning");
         }
       } finally {
         hideLoader();

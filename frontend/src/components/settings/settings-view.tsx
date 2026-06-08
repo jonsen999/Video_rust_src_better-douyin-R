@@ -52,6 +52,7 @@ import {
   selectDirectory,
   verifyCookie,
 } from "@/lib/tauri";
+import type { CookieStatus } from "@/lib/contracts";
 import type { ThemeMode } from "@/types";
 
 type LoginStatus = "idle" | "starting" | "waiting" | "success" | "error" | "cancelled";
@@ -165,6 +166,18 @@ export function SettingsView() {
     }
   }, []);
 
+  const updateCookieLoggedInFromStatus = useCallback((status: CookieStatus) => {
+    if (status.valid) {
+      setCookieLoggedIn(true, status.user_name || undefined);
+      return true;
+    }
+    if (status.need_verify && !status.need_login) {
+      return false;
+    }
+    setCookieLoggedIn(false);
+    return false;
+  }, [setCookieLoggedIn]);
+
   useEffect(() => {
     return () => {
       Object.values(statusTimersRef.current).forEach((timer) => {
@@ -211,14 +224,13 @@ export function SettingsView() {
           verifyCookie()
             .then((status) => {
               if (disposed) return;
-              setCookieLoggedIn(status.valid, status.user_name || undefined);
+              updateCookieLoggedInFromStatus(status);
               if (!status.valid) {
                 setLoginMessage(status.message || "Cookie 已失效，请重新登录");
               }
             })
             .catch((error) => {
               if (disposed) return;
-              setCookieLoggedIn(false);
               setLoginMessage(error instanceof Error ? error.message : "Cookie 校验失败");
             });
         } else {
@@ -233,7 +245,7 @@ export function SettingsView() {
       disposed = true;
       cleanup();
     };
-  }, [cleanup, setCookieLoggedIn]);
+  }, [cleanup, setCookieLoggedIn, updateCookieLoggedInFromStatus]);
 
   useEffect(() => {
     let disposed = false;
@@ -309,14 +321,13 @@ export function SettingsView() {
             if (cookie_set) {
               void verifyCookie()
                 .then((status) => {
-                  setCookieLoggedIn(status.valid, status.user_name || undefined);
+                  updateCookieLoggedInFromStatus(status);
                   if (!status.valid) {
                     setLoginStatus("error");
                     setLoginMessage(status.message || "Cookie 校验失败，请重新登录");
                   }
                 })
                 .catch((error) => {
-                  setCookieLoggedIn(false);
                   setLoginStatus("error");
                   setLoginMessage(error instanceof Error ? error.message : "Cookie 校验失败，请重新登录");
                 });
@@ -425,17 +436,24 @@ export function SettingsView() {
       if (!result.success) {
         throw new Error(result.message || "保存 Cookie 失败");
       }
-      const status = await verifyCookie().catch((error) => ({
-        valid: false,
-        user_name: null,
-        message: error instanceof Error ? error.message : "Cookie 校验失败",
-      }));
-      setCookieLoggedIn(status.valid, status.user_name || undefined);
-      rejectedCookieRef.current = status.valid ? "" : trimmed;
-      setCookieInputStatus(status.valid ? "valid" : "invalid");
+      const status = await verifyCookie().catch((error) => {
+        const message = error instanceof Error ? error.message : "Cookie 校验失败";
+        setCookieInputStatus("invalid");
+        setLoginMessage(message);
+        addLog(message, "warning");
+        toast.warning(message, "校验失败");
+        return null;
+      });
+      if (!status) {
+        await initClient().catch(() => {});
+        return;
+      }
+      const isValid = updateCookieLoggedInFromStatus(status);
+      rejectedCookieRef.current = isValid ? "" : trimmed;
+      setCookieInputStatus(isValid ? "valid" : "invalid");
       setLoginMessage(status.message || "Cookie 已保存");
-      addLog(status.valid ? "Cookie 已保存并通过校验" : "Cookie 已保存但校验失败", status.valid ? "success" : "warning");
-      if (status.valid) {
+      addLog(isValid ? "Cookie 已保存并通过校验" : "Cookie 已保存但校验失败", isValid ? "success" : "warning");
+      if (isValid) {
         toast.success("Cookie 已自动保存并校验", "已登录");
       } else {
         toast.warning(status.message || "Cookie 已保存但校验失败", "需要重新登录");
