@@ -3019,13 +3019,38 @@ async fn publish_comment(
         .publish_comment(&aweme_id, &text, &reply_id, &reply_to_reply_id)
         .await
     {
-        Ok((response, comment)) => Ok(serde_json::json!({
-            "success": true,
-            "aweme_id": aweme_id,
-            "comment": comment,
-            "raw": response,
-            "message": "评论已发布"
-        })),
+        Ok((response, comment, updated_cookie)) => {
+            if let Some(updated_cookie) = updated_cookie {
+                let mut next_config = state.config.lock().await.clone();
+                if next_config.cookie != updated_cookie {
+                    next_config.cookie = updated_cookie;
+                    match next_config.save() {
+                        Ok(_) => {
+                            *state.config.lock().await = next_config.clone();
+                            match DouyinClient::new(next_config) {
+                                Ok(next_client) => {
+                                    *state.client.lock().await = Some(next_client);
+                                    log::info!("评论发布响应 Cookie 已保存到配置");
+                                }
+                                Err(error) => {
+                                    log::warn!("评论发布后重建 API client 失败: {}", error);
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            log::warn!("评论发布响应 Cookie 保存失败: {}", error);
+                        }
+                    }
+                }
+            }
+            Ok(serde_json::json!({
+                "success": true,
+                "aweme_id": aweme_id,
+                "comment": comment,
+                "raw": response,
+                "message": "评论已发布"
+            }))
+        }
         Err(e) => Ok(api_verify_or_error_response(
             "发表评论失败",
             e,
