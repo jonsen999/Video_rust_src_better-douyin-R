@@ -614,6 +614,46 @@ pub fn sign_spider_publish(params: &str, body: &str) -> String {
 mod tests {
     use super::*;
 
+    fn decode_custom_base64(value: &str) -> Vec<u8> {
+        let mut output = Vec::new();
+        for chunk in value.as_bytes().chunks(4) {
+            let padding = chunk.iter().filter(|&&byte| byte == b'=').count();
+            let mut numbers = [0u32; 4];
+            for (index, byte) in chunk.iter().enumerate() {
+                numbers[index] = if *byte == b'=' {
+                    0
+                } else {
+                    S4.iter()
+                        .position(|candidate| candidate == byte)
+                        .expect("custom base64 byte") as u32
+                };
+            }
+            let packed =
+                (numbers[0] << 18) | (numbers[1] << 12) | (numbers[2] << 6) | numbers[3];
+            output.push(((packed >> 16) & 0xff) as u8);
+            if padding < 2 {
+                output.push(((packed >> 8) & 0xff) as u8);
+            }
+            if padding < 1 {
+                output.push((packed & 0xff) as u8);
+            }
+        }
+        output
+    }
+
+    fn spider_plain_block(a_bogus: &str) -> Vec<u8> {
+        let decoded = decode_custom_base64(a_bogus);
+        rc4_encrypt(&decoded[12..], b"y")
+    }
+
+    fn without_time_fields(block: &[u8]) -> Vec<u8> {
+        let mut normalized = block.to_vec();
+        for index in [1usize, 11, 21, 26, 30, 31, 33, 34, 36, 37, 38, 39, 108] {
+            normalized[index] = 0;
+        }
+        normalized
+    }
+
     #[test]
     fn test_sm3() {
         let hash = sm3_hash(b"abc");
@@ -635,5 +675,38 @@ mod tests {
         // 验证输出格式 (以 '=' 结尾的 Base64)
         assert!(result.ends_with('='));
         assert!(result.len() > 50);
+    }
+
+    #[test]
+    fn test_spider_publish_sign_matches_legacy_js_shape() {
+        let params = concat!(
+            "app_name=aweme&enter_from=discover&previous_page=discover",
+            "&device_platform=webapp&aid=6383&channel=channel_pc_web",
+            "&pc_client_type=1&update_version_code=170400&version_code=170400",
+            "&version_name=17.4.0&cookie_enabled=true&screen_width=1707",
+            "&screen_height=960&browser_language=zh-CN&browser_platform=Win32",
+            "&browser_name=Edge&browser_version=125.0.0.0&browser_online=true",
+            "&engine_name=Blink&engine_version=125.0.0.0&os_name=Windows",
+            "&os_version=10&cpu_core_num=32&device_memory=8&platform=PC",
+            "&downlink=10&effective_type=4g&round_trip_time=100&webid=123",
+            "&msToken=abc"
+        );
+        let body = concat!(
+            "aweme_id=7640032041598198757&comment_send_celltime=3000",
+            "&comment_video_celltime=2000&text=test&text_extra=%5B%5D"
+        );
+        let legacy_js = concat!(
+            "Qvm0/QuvDi2PffyX53QLfY3qVVBQYpKf0SVkMDhe17-7c639HMYX9exEm-ivmg6eET//Ieujy4hbTrOgrQcjMZwf9Skw/",
+            "2A2mESkKl5Q5xSSs1XyeykgJUhimktRSeo2RkBlrOXBwwpHzYYm09oHmhK4bIOwu3GMWD=="
+        );
+
+        let native = sign_spider_publish(params, body);
+
+        assert_eq!(decode_custom_base64(&native).len(), 121);
+        assert_eq!(decode_custom_base64(legacy_js).len(), 121);
+        assert_eq!(
+            without_time_fields(&spider_plain_block(&native)),
+            without_time_fields(&spider_plain_block(legacy_js))
+        );
     }
 }

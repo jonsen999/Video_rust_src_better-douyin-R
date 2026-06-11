@@ -1342,6 +1342,7 @@ async fn cookie_browser_login(
                             current_user.uid,
                             current_user.nickname
                         );
+                        let verified_cookie_string = cookie_string.clone();
                         let mut next_config = config_state.lock().await.clone();
                         if !current_user.uid.trim().is_empty() {
                             if !relation_signer_ready_for_uid(&relation_signer, &current_user.uid) {
@@ -1413,6 +1414,26 @@ async fn cookie_browser_login(
                             } else {
                                 None
                             };
+                        }
+
+                        if cookie_string != verified_cookie_string {
+                            let base_config = config_state.lock().await.clone();
+                            match verify_douyin_login_cookie(&base_config, &cookie_string).await {
+                                Ok(final_user) => {
+                                    log::info!(
+                                        "cookie browser final cookie verified: user_id={} nickname={}",
+                                        final_user.uid,
+                                        final_user.nickname
+                                    );
+                                }
+                                Err(error) => {
+                                    log::info!(
+                                        "cookie browser final cookie rejected; falling back to verified cookie: {}",
+                                        error
+                                    );
+                                    cookie_string = verified_cookie_string;
+                                }
+                            }
                         }
 
                         next_config.cookie = cookie_string.clone();
