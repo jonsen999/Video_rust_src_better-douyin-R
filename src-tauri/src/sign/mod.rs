@@ -1,6 +1,6 @@
 //! 抖音 a_bogus 签名算法 - Rust 实现
 //!
-//! 移植自 lib/js/douyin.js
+//! 原生 Rust 实现，不依赖 JS 运行时
 
 use rand::Rng;
 use std::time::{SystemTime, UNIX_EPOCH};
