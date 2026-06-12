@@ -12,7 +12,6 @@ use openssl::pkey::PKey;
 use openssl::sign::Signer;
 use rand::{distributions::Alphanumeric, Rng};
 use regex::Regex;
-use reqwest::header::SET_COOKIE;
 use reqwest::redirect::Policy;
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
@@ -218,50 +217,6 @@ impl DouyinClient {
             parts.push(format!("{name}={value}"));
         }
         parts.join("; ")
-    }
-
-    fn merge_response_cookies(cookie_str: &str, headers: &reqwest::header::HeaderMap) -> Option<String> {
-        let mut updates = HashMap::new();
-        for value in headers.get_all(SET_COOKIE).iter() {
-            let Ok(header) = value.to_str() else {
-                continue;
-            };
-            let Some(first_part) = header.split(';').next() else {
-                continue;
-            };
-            let Some((name, cookie_value)) = first_part.trim().split_once('=') else {
-                continue;
-            };
-            let name = name.trim();
-            if name.is_empty() || cookie_value.is_empty() {
-                continue;
-            }
-            updates.insert(name.to_string(), cookie_value.to_string());
-        }
-
-        if updates.is_empty() {
-            return None;
-        }
-
-        let mut cookie_dict = Self::cookies_to_dict(cookie_str);
-        let mut changed = false;
-        for (name, value) in updates {
-            if cookie_dict.get(&name) != Some(&value) {
-                cookie_dict.insert(name, value);
-                changed = true;
-            }
-        }
-        if !changed {
-            return None;
-        }
-
-        Some(
-            cookie_dict
-                .into_iter()
-                .map(|(name, value)| format!("{name}={value}"))
-                .collect::<Vec<_>>()
-                .join("; "),
-        )
     }
 
     fn decode_relation_ecdh_key(value: &str) -> Option<Vec<u8>> {
@@ -3196,7 +3151,7 @@ impl DouyinClient {
         text: &str,
         reply_id: &str,
         reply_to_reply_id: &str,
-    ) -> Result<(serde_json::Value, Option<CommentInfo>, Option<String>)> {
+    ) -> Result<(serde_json::Value, Option<CommentInfo>)> {
         let aweme_id = aweme_id.trim();
         let text = text.trim();
         if aweme_id.is_empty() {
@@ -3357,16 +3312,9 @@ impl DouyinClient {
             self.config.relation_signer.is_some(),
         );
 
-        let mut updated_cookie: Option<String> = None;
         let (mut status, mut response_headers, mut body) = self
             .post_form_parts(url, &spider_query_parts, &spider_body, &spider_headers)
             .await?;
-        if let Some(next_cookie) =
-            Self::merge_response_cookies(updated_cookie.as_deref().unwrap_or(&self.config.cookie), &response_headers)
-        {
-            log::info!("Douyin comment publish merged response cookies from spider response");
-            updated_cookie = Some(next_cookie);
-        }
         let first_ticket_guard_result =
             Self::header_value(&response_headers, "bd-ticket-guard-result");
         log::info!(
@@ -3390,13 +3338,6 @@ impl DouyinClient {
                 (status, response_headers, body) = self
                     .post_form_parts(url, &spider_query_parts, &spider_body, &retry_headers)
                     .await?;
-                if let Some(next_cookie) = Self::merge_response_cookies(
-                    updated_cookie.as_deref().unwrap_or(&self.config.cookie),
-                    &response_headers,
-                ) {
-                    log::info!("Douyin comment publish merged response cookies from cookie-ticket response");
-                    updated_cookie = Some(next_cookie);
-                }
                 log::info!(
                     "Douyin comment publish cookie-ticket response: status={} len={} ticket_guard_result={} logid={}",
                     status,
@@ -3507,13 +3448,6 @@ impl DouyinClient {
             (status, response_headers, body) = self
                 .post_form_parts(url, &query_parts, &body_params, &headers)
                 .await?;
-            if let Some(next_cookie) = Self::merge_response_cookies(
-                updated_cookie.as_deref().unwrap_or(&self.config.cookie),
-                &response_headers,
-            ) {
-                log::info!("Douyin comment publish merged response cookies from relation-v2 response");
-                updated_cookie = Some(next_cookie);
-            }
             log::info!(
                 "Douyin comment publish relation-v2 response: status={} len={} ticket_guard_result={} logid={}",
                 status,
@@ -3538,13 +3472,6 @@ impl DouyinClient {
                     (status, response_headers, body) = self
                         .post_form_parts(url, &query_parts, &body_params, &cookie_headers)
                         .await?;
-                    if let Some(next_cookie) = Self::merge_response_cookies(
-                        updated_cookie.as_deref().unwrap_or(&self.config.cookie),
-                        &response_headers,
-                    ) {
-                        log::info!("Douyin comment publish merged response cookies from relation-v2 cookie-ticket response");
-                        updated_cookie = Some(next_cookie);
-                    }
                     log::info!(
                         "Douyin comment publish relation-v2 cookie-ticket response: status={} len={} ticket_guard_result={} logid={}",
                         status,
@@ -3618,7 +3545,7 @@ impl DouyinClient {
         let comment = response
             .get("comment")
             .and_then(|value| self.parse_comment(value));
-        Ok((response, comment, updated_cookie))
+        Ok((response, comment))
     }
 
     /// 解析分享链接
