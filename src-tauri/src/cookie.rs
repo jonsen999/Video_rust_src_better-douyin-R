@@ -3,6 +3,7 @@
 use crate::api::UserInfo;
 use crate::config::AppConfig;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tauri::webview::Cookie;
@@ -11,6 +12,7 @@ use tauri::webview::Cookie;
 pub struct CookieLoginSession {
     pub label: String,
     pub cancelled: Arc<AtomicBool>,
+    pub data_dir: Option<PathBuf>,
 }
 
 pub fn serialize_cookie_string(cookies: &[Cookie<'static>]) -> String {

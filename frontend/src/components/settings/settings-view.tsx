@@ -47,6 +47,7 @@ import {
   getConfig,
   initClient,
   listenEvent,
+  logoutCookie,
   restartApp,
   saveConfig,
   selectDirectory,
@@ -364,6 +365,22 @@ export function SettingsView() {
     cleanup();
     setLoginStatus("cancelled");
     setLoginMessage("已取消");
+  };
+
+  const handleLogout = async () => {
+    try {
+      await logoutCookie();
+      addLog("已退出登录，登录窗口状态已清理", "success");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "退出登录失败";
+      addLog(message, "warning");
+      toast.warning(message, "退出登录");
+    }
+    setCookieLoggedIn(false);
+    setCookieValue("");
+    setCookieInputStatus("idle");
+    rejectedCookieRef.current = "";
+    resetLogin();
   };
 
   const resetLogin = () => {
@@ -918,10 +935,7 @@ export function SettingsView() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => {
-                  setCookieLoggedIn(false);
-                  resetLogin();
-                }}
+                onClick={handleLogout}
                 className="h-9 rounded-lg text-text-muted hover:text-text gap-1.5"
               >
                 <LogOut className="w-3.5 h-3.5" />

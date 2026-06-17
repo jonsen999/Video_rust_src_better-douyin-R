@@ -708,6 +708,13 @@ export async function saveConfig(config: Partial<AppConfig>): Promise<{ success:
   return invoke("save_config", { config: nextConfig });
 }
 
+export async function logoutCookie(): Promise<{ success: boolean; message: string }> {
+  if (shouldUseBrowserBridge()) {
+    return saveConfig({ cookie: "" });
+  }
+  return invoke("logout_cookie");
+}
+
 export async function selectDirectory(): Promise<string | null> {
   if (shouldUseBrowserBridge()) {
     const result = await requestJson<{ success: boolean; path?: string; message?: string }>("/api/select_directory", {

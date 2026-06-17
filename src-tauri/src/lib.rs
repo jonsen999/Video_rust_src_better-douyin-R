@@ -73,19 +73,29 @@ fn clear_douyin_login_cookies(window: &tauri::WebviewWindow) {
         .map(|domain| domain.to_string())
         .collect::<HashSet<_>>();
 
+    let mut deleted = 0usize;
     if let Ok(cookies) = window.cookies() {
         for cookie in cookies {
-            if cookie
+            let name = cookie.name().to_string();
+            let is_douyin_domain = cookie
                 .domain()
                 .map(|domain| {
                     let domain = domain.trim().trim_start_matches('.').to_ascii_lowercase();
                     domain == "douyin.com" || domain.ends_with(".douyin.com")
                 })
-                .unwrap_or(false)
-            {
+                .unwrap_or(false);
+            let is_login_cookie =
+                DOUYIN_LOGIN_COOKIE_NAMES.contains(&name.as_str())
+                    || name == RELATION_SIGNER_COOKIE_NAME
+                    || name.starts_with(IM_FRIEND_IDS_COOKIE_PREFIX);
+
+            if is_douyin_domain || is_login_cookie {
                 names.insert(cookie.name().to_string());
                 if let Some(domain) = cookie.domain() {
                     domains.insert(domain.to_string());
+                }
+                if window.delete_cookie(cookie).is_ok() {
+                    deleted += 1;
                 }
             }
         }
@@ -110,10 +120,76 @@ fn clear_douyin_login_cookies(window: &tauri::WebviewWindow) {
         }
     }
     log::info!(
-        "cleared douyin webview cookies: names={} writes={}",
+        "cleared douyin webview cookies: names={} deleted={} writes={}",
         names.len(),
+        deleted,
         cleared
     );
+}
+
+fn clear_douyin_login_storage(window: &tauri::WebviewWindow) {
+    let script = r#"
+        (() => {
+            try { localStorage.clear(); } catch (error) {}
+            try { sessionStorage.clear(); } catch (error) {}
+            try {
+                if (window.caches && caches.keys) {
+                    caches.keys().then((keys) => keys.forEach((key) => caches.delete(key))).catch(() => {});
+                }
+            } catch (error) {}
+            try {
+                if (window.indexedDB && indexedDB.databases) {
+                    indexedDB.databases()
+                        .then((databases) => databases.forEach((db) => db && db.name && indexedDB.deleteDatabase(db.name)))
+                        .catch(() => {});
+                }
+            } catch (error) {}
+        })();
+    "#;
+    if let Err(error) = window.eval(script) {
+        log::debug!("failed to clear douyin login storage: {}", error);
+    }
+}
+
+fn reset_douyin_login_window_state(window: &tauri::WebviewWindow) {
+    clear_douyin_login_cookies(window);
+    clear_douyin_login_storage(window);
+}
+
+fn schedule_douyin_login_storage_cleanup(window: tauri::WebviewWindow) {
+    tauri::async_runtime::spawn(async move {
+        for delay_ms in [300_u64, 1200, 2500] {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            clear_douyin_login_storage(&window);
+        }
+    });
+}
+
+fn schedule_remove_login_data_dir(path: Option<PathBuf>) {
+    let Some(path) = path else {
+        return;
+    };
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        if let Err(error) = fs::remove_dir_all(&path) {
+            if path.exists() {
+                log::debug!(
+                    "failed to remove douyin login webview data dir {}: {}",
+                    path.display(),
+                    error
+                );
+            }
+        }
+    });
+}
+
+fn close_stale_cookie_login_windows(app: &tauri::AppHandle) {
+    for (label, window) in app.webview_windows() {
+        if label == "cookie-browser-login" || label.starts_with("cookie-browser-login-") {
+            let _ = window.clear_all_browsing_data();
+            let _ = window.close();
+        }
+    }
 }
 
 fn extract_relation_signer_cookie(
@@ -997,6 +1073,20 @@ async fn emit_cookie_login_status(app: &tauri::AppHandle, payload: serde_json::V
     let _ = app.emit("cookie-login-status", payload);
 }
 
+async fn clear_cookie_login_session_if_current(
+    cookie_login_state: &Arc<Mutex<Option<CookieLoginSession>>>,
+    label: &str,
+) {
+    let mut guard = cookie_login_state.lock().await;
+    if guard
+        .as_ref()
+        .map(|session| session.label.as_str())
+        .is_some_and(|current_label| current_label == label)
+    {
+        *guard = None;
+    }
+}
+
 // ============================================================================
 // Tauri Commands
 // ============================================================================
@@ -1093,6 +1183,54 @@ async fn save_config(
     }
 }
 
+#[tauri::command]
+async fn logout_cookie(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    if let Some(session) = state.cookie_login.lock().await.take() {
+        session.cancelled.store(true, Ordering::SeqCst);
+        if let Some(window) = app.get_webview_window(&session.label) {
+            let _ = window.clear_all_browsing_data();
+            let _ = window.close();
+        }
+        schedule_remove_login_data_dir(session.data_dir);
+    }
+    close_stale_cookie_login_windows(&app);
+
+    for (_, window) in app.webview_windows() {
+        clear_douyin_login_cookies(&window);
+    }
+
+    let mut next_config = state.config.lock().await.clone();
+    next_config.cookie.clear();
+    next_config.relation_signer = None;
+    next_config.im_friend_sec_user_ids.clear();
+
+    match next_config.save() {
+        Ok(_) => {
+            *state.config.lock().await = next_config.clone();
+            *state.client.lock().await = None;
+            if let Some(downloader) = state.downloader.lock().await.as_mut() {
+                if let Err(error) = downloader.update_config(next_config) {
+                    log::warn!(
+                        "Failed to update downloader config after cookie logout: {}",
+                        error
+                    );
+                }
+            }
+            Ok(serde_json::json!({
+                "success": true,
+                "message": "已退出登录"
+            }))
+        }
+        Err(error) => Ok(serde_json::json!({
+            "success": false,
+            "message": format!("退出登录失败: {}", error)
+        })),
+    }
+}
+
 /// 选择目录
 #[tauri::command]
 async fn select_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
@@ -1169,24 +1307,35 @@ async fn cookie_browser_login(
     browser: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let _ = browser;
-    let label = "cookie-browser-login".to_string();
-    let login_url = Url::parse("https://www.douyin.com/").map_err(|error| error.to_string())?;
-
-    if let Some(window) = app.get_webview_window(&label) {
-        clear_douyin_login_cookies(&window);
-        let _ = window.navigate(login_url.clone());
-        let _ = window.show();
-        let _ = window.set_focus();
-        return Ok(serde_json::json!({
-            "success": true,
-            "message": "登录窗口已重置，请重新登录"
-        }));
+    if let Some(session) = state.cookie_login.lock().await.take() {
+        session.cancelled.store(true, Ordering::SeqCst);
+        if let Some(window) = app.get_webview_window(&session.label) {
+            let _ = window.clear_all_browsing_data();
+            let _ = window.close();
+        }
+        schedule_remove_login_data_dir(session.data_dir);
     }
+    close_stale_cookie_login_windows(&app);
+
+    let label = format!(
+        "cookie-browser-login-{}",
+        chrono::Utc::now().timestamp_millis()
+    );
+    let login_data_dir = app
+        .path()
+        .temp_dir()
+        .map_err(|error| format!("无法创建登录临时目录: {}", error))?
+        .join(&label);
+    let _ = fs::remove_dir_all(&login_data_dir);
+    fs::create_dir_all(&login_data_dir)
+        .map_err(|error| format!("无法创建登录临时目录: {}", error))?;
+    let login_url = Url::parse("https://www.douyin.com/").map_err(|error| error.to_string())?;
 
     let cancelled = Arc::new(AtomicBool::new(false));
     *state.cookie_login.lock().await = Some(CookieLoginSession {
         label: label.clone(),
         cancelled: cancelled.clone(),
+        data_dir: Some(login_data_dir.clone()),
     });
 
     let window = tauri::WebviewWindowBuilder::new(
@@ -1198,11 +1347,14 @@ async fn cookie_browser_login(
     .inner_size(1100.0, 820.0)
     .resizable(true)
     .focused(true)
+    .incognito(true)
+    .data_directory(login_data_dir.clone())
     .build()
     .map_err(|error| format!("无法打开登录窗口: {}", error))?;
 
-    clear_douyin_login_cookies(&window);
+    reset_douyin_login_window_state(&window);
     let _ = window.navigate(login_url.clone());
+    schedule_douyin_login_storage_cleanup(window.clone());
 
     emit_cookie_login_status(
         &app,
@@ -1219,6 +1371,7 @@ async fn cookie_browser_login(
     let cookie_login_state = state.cookie_login.clone();
     let login_timeout = timeout.unwrap_or(300);
     let label_clone = label.clone();
+    let login_data_dir_clone = Some(login_data_dir.clone());
 
     tauri::async_runtime::spawn(async move {
         let started_at = std::time::Instant::now();
@@ -1227,9 +1380,11 @@ async fn cookie_browser_login(
         loop {
             if cancelled.load(Ordering::SeqCst) {
                 if let Some(window) = app.get_webview_window(&label_clone) {
+                    let _ = window.clear_all_browsing_data();
                     let _ = window.close();
                 }
-                *cookie_login_state.lock().await = None;
+                schedule_remove_login_data_dir(login_data_dir_clone.clone());
+                clear_cookie_login_session_if_current(&cookie_login_state, &label_clone).await;
                 emit_cookie_login_status(
                     &app,
                     serde_json::json!({
@@ -1243,9 +1398,11 @@ async fn cookie_browser_login(
 
             if started_at.elapsed().as_secs() >= login_timeout {
                 if let Some(window) = app.get_webview_window(&label_clone) {
+                    let _ = window.clear_all_browsing_data();
                     let _ = window.close();
                 }
-                *cookie_login_state.lock().await = None;
+                schedule_remove_login_data_dir(login_data_dir_clone.clone());
+                clear_cookie_login_session_if_current(&cookie_login_state, &label_clone).await;
                 emit_cookie_login_status(
                     &app,
                     serde_json::json!({
@@ -1258,7 +1415,8 @@ async fn cookie_browser_login(
             }
 
             let Some(window) = app.get_webview_window(&label_clone) else {
-                *cookie_login_state.lock().await = None;
+                schedule_remove_login_data_dir(login_data_dir_clone.clone());
+                clear_cookie_login_session_if_current(&cookie_login_state, &label_clone).await;
                 emit_cookie_login_status(
                     &app,
                     serde_json::json!({
@@ -1512,6 +1670,12 @@ async fn cookie_browser_login(
                             next_config.im_friend_sec_user_ids.len()
                         );
                         if let Err(error) = next_config.save() {
+                            schedule_remove_login_data_dir(login_data_dir_clone.clone());
+                            clear_cookie_login_session_if_current(
+                                &cookie_login_state,
+                                &label_clone,
+                            )
+                            .await;
                             emit_cookie_login_status(
                                 &app,
                                 serde_json::json!({
@@ -1538,7 +1702,9 @@ async fn cookie_browser_login(
                         }
 
                         let _ = window.close();
-                        *cookie_login_state.lock().await = None;
+                        schedule_remove_login_data_dir(login_data_dir_clone.clone());
+                        clear_cookie_login_session_if_current(&cookie_login_state, &label_clone)
+                            .await;
                         emit_cookie_login_status(
                             &app,
                             serde_json::json!({
@@ -1579,8 +1745,10 @@ async fn cancel_cookie_browser_login(
     if let Some(session) = session {
         session.cancelled.store(true, Ordering::SeqCst);
         if let Some(window) = app.get_webview_window(&session.label) {
+            let _ = window.clear_all_browsing_data();
             let _ = window.close();
         }
+        schedule_remove_login_data_dir(session.data_dir);
         Ok(serde_json::json!({
             "success": true,
             "message": "已取消"
@@ -4578,6 +4746,7 @@ pub fn run() {
             init_client,
             get_config,
             save_config,
+            logout_cookie,
             select_directory,
             parse_url,
             parse_link,
