@@ -75,7 +75,7 @@ fn default_download_quality() -> String {
     "auto".to_string()
 }
 fn default_im_friend_refresh_interval_seconds() -> u64 {
-    5
+    30
 }
 
 impl Default for AppConfig {

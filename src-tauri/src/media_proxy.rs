@@ -141,6 +141,16 @@ fn should_send_cookie(url: &Url) -> bool {
         .any(|domain| host_matches(&host, domain))
 }
 
+fn media_url_label(raw_url: &str) -> String {
+    Url::parse(raw_url)
+        .ok()
+        .and_then(|url| {
+            let host = url.host_str()?.to_string();
+            Some(format!("{}{}", host, url.path()))
+        })
+        .unwrap_or_else(|| raw_url.chars().take(80).collect::<String>())
+}
+
 fn allowed_request_origin(request_headers: &HeaderMap) -> Option<Option<HeaderValue>> {
     let Some(origin) = request_headers.get(header::ORIGIN) else {
         return Some(None);
@@ -618,9 +628,10 @@ async fn media_proxy(
     Query(query): Query<MediaProxyQuery>,
     request_headers: HeaderMap,
 ) -> Response<Body> {
-    log::info!(
+    let query_url_label = media_url_label(&query.url);
+    log::debug!(
         "media_proxy request received: url={} media_type={:?} Range={:?}",
-        query.url,
+        query_url_label,
         query.media_type,
         request_headers.get(header::RANGE)
     );
@@ -686,10 +697,10 @@ async fn media_proxy(
     );
     for cache_key in &range_cache_keys {
         if let Some(cached) = state.media_range_cache.lock().await.get(cache_key).cloned() {
-            log::info!(
+            log::debug!(
                 "media proxy range cache hit: range=\"{}\" url={}",
                 request_range_str,
-                upstream_url.chars().take(120).collect::<String>()
+                media_url_label(&upstream_url)
             );
             return cached_media_response(cached, allow_origin);
         }
@@ -773,7 +784,7 @@ async fn media_proxy(
                         status,
                         retry_count,
                         MAX_RETRIES,
-                        upstream_url.chars().take(80).collect::<String>()
+                        media_url_label(&upstream_url)
                     );
                     tokio::time::sleep(tokio::time::Duration::from_millis(
                         500 * retry_count as u64,
@@ -803,7 +814,7 @@ async fn media_proxy(
                         error,
                         retry_count,
                         MAX_RETRIES,
-                        upstream_url.chars().take(80).collect::<String>()
+                        media_url_label(&upstream_url)
                     );
                     tokio::time::sleep(tokio::time::Duration::from_millis(
                         500 * retry_count as u64,
@@ -821,7 +832,7 @@ async fn media_proxy(
                     start.elapsed().as_millis(),
                     should_seed_video_range,
                     request_range_str,
-                    upstream_url.chars().take(120).collect::<String>()
+                    media_url_label(&upstream_url)
                 );
                 return build_error_response(StatusCode::BAD_GATEWAY, "Proxy error");
             }
@@ -841,16 +852,31 @@ async fn media_proxy(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("")
         .to_string();
-    log::info!(
-        "media proxy upstream response: status={} seeded_range={} request_range=\"{}\" upstream_range=\"{}\" length=\"{}\" elapsed_ms={} url={}",
-        status,
-        should_seed_video_range,
-        request_range_str,
-        upstream_content_range,
-        upstream_content_length,
-        start.elapsed().as_millis(),
-        upstream_url.chars().take(120).collect::<String>()
-    );
+    let elapsed_ms = start.elapsed().as_millis();
+    let upstream_url_label = media_url_label(&upstream_url);
+    if status.is_success() && elapsed_ms < 8_000 {
+        log::debug!(
+            "media proxy upstream response: status={} seeded_range={} request_range=\"{}\" upstream_range=\"{}\" length=\"{}\" elapsed_ms={} url={}",
+            status,
+            should_seed_video_range,
+            request_range_str,
+            upstream_content_range,
+            upstream_content_length,
+            elapsed_ms,
+            upstream_url_label
+        );
+    } else {
+        log::warn!(
+            "media proxy upstream response: status={} seeded_range={} request_range=\"{}\" upstream_range=\"{}\" length=\"{}\" elapsed_ms={} url={}",
+            status,
+            should_seed_video_range,
+            request_range_str,
+            upstream_content_range,
+            upstream_content_length,
+            elapsed_ms,
+            upstream_url_label
+        );
+    }
 
     let mut response_builder = Response::builder().status(status);
     let response_headers = match response_builder.headers_mut() {
@@ -898,7 +924,7 @@ async fn media_proxy(
         HeaderValue::from_static("public, max-age=3600"),
     );
 
-    log::info!(
+    log::debug!(
         "media_proxy response: status={} content_type={:?} content_length={:?} content_range={:?}",
         status,
         response_headers.get(header::CONTENT_TYPE),
@@ -946,7 +972,7 @@ async fn media_proxy(
                     }
                     log::warn!(
                         "media proxy failed to decrypt IM image, returning raw response: url={}",
-                        upstream_url.chars().take(120).collect::<String>()
+                        media_url_label(&upstream_url)
                     );
                     return response_builder
                         .body(Body::from(encrypted))

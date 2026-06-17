@@ -2453,7 +2453,7 @@ async fn get_friend_online_status(
         .await
     {
         Ok(fetched_ids) => {
-            log::info!(
+            log::debug!(
                 "friend online auto IM spotlight ids fetched: include_all_users={} raw_count={}",
                 include_all_users,
                 fetched_ids.len()
@@ -2554,7 +2554,7 @@ async fn get_friend_online_status(
 
     for (index, chunk) in sec_user_ids.chunks(20).enumerate() {
         let chunk_ids = chunk.to_vec();
-        log::info!(
+        log::debug!(
             "friend online IM batch request: batch={} size={} total={}",
             index + 1,
             chunk_ids.len(),
@@ -2584,7 +2584,7 @@ async fn get_friend_online_status(
             .and_then(|value| value.as_array())
             .map(|items| items.len())
             .unwrap_or_default();
-        log::info!(
+        log::debug!(
             "friend online IM user info batch response: batch={} requested={} returned={}",
             index + 1,
             chunk_ids.len(),
@@ -2620,7 +2620,7 @@ async fn get_friend_online_status(
             .and_then(|value| value.as_array())
             .map(|items| items.len())
             .unwrap_or_default();
-        log::info!(
+        log::debug!(
             "friend online IM active status batch response: batch={} requested={} returned={}",
             index + 1,
             chunk_ids.len(),

@@ -1639,7 +1639,7 @@ impl DouyinClient {
             MediaType::Video
         };
 
-        log::info!(
+        log::debug!(
             "parse_video_info: aweme_id={} is_image={} has_live_photo={} media_type={:?}",
             aweme_id,
             is_image,
@@ -3670,7 +3670,7 @@ impl DouyinClient {
             .map(|key| key.to_string())
             .collect::<Vec<_>>();
         body_keys.sort();
-        log::info!(
+        log::debug!(
             "Douyin IM request: path={} body_keys={} sec_user_ids_len={}",
             relation_path,
             body_keys.join(","),
@@ -3743,7 +3743,7 @@ impl DouyinClient {
             sign::sign_detail(&params_str, user_agent),
         );
 
-        log::info!("Douyin IM GET request: path={}", relation_path);
+        log::debug!("Douyin IM GET request: path={}", relation_path);
 
         let mut req = self.client.get(url).query(&query_params);
         for (key, value) in &headers {
