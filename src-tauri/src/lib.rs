@@ -3235,6 +3235,7 @@ async fn download_video(
         .unwrap_or("")
         .trim()
         .to_string();
+    let mut published_at = coerce_i64(video.get("create_time"), 0);
     let mut desc = video
         .get("desc")
         .and_then(|value| value.as_str())
@@ -3300,6 +3301,9 @@ async fn download_video(
                 if cover.is_empty() {
                     cover = refreshed_video.video.cover.clone();
                 }
+                if published_at <= 0 {
+                    published_at = refreshed_video.create_time;
+                }
                 if media_urls.is_empty() {
                     media_urls = download_media_items_from_video(&refreshed_video);
                     media_type = refreshed_video.media_type.clone();
@@ -3363,6 +3367,7 @@ async fn download_video(
                     cover,
                     media_type,
                     media_urls,
+                    published_at,
                     None,
                 )
                 .await
@@ -3377,6 +3382,7 @@ async fn download_video(
                 cover,
                 media_type,
                 media_urls,
+                published_at,
                 None,
             )
             .await
@@ -3713,6 +3719,7 @@ async fn add_download_task(
         return Err("没有可用的媒体URL".to_string());
     }
     let media_type = media_type_from_payload_or_items(&raw_media_type, &media_urls);
+    let published_at = coerce_i64(video.get("create_time"), 0);
     let desc = video
         .get("desc")
         .and_then(|value| value.as_str())
@@ -3748,6 +3755,7 @@ async fn add_download_task(
             cover,
             media_type,
             media_urls,
+            published_at,
             path,
         )
         .await

@@ -1600,9 +1600,7 @@ impl DouyinClient {
                     .and_then(|value| value.as_str())
                 {
                     live_photo_urls_list.push(url.to_string());
-                }
-
-                if let Some(url) = image
+                } else if let Some(url) = image
                     .get("url_list")
                     .and_then(|value| value.as_array())
                     .and_then(|urls| urls.last())
@@ -5880,6 +5878,7 @@ fn looks_like_logged_out_error(message: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::DouyinClient;
+    use crate::api::MediaType;
     use crate::config::AppConfig;
     use serde_json::json;
 
@@ -5922,11 +5921,11 @@ mod tests {
     }
 
     #[test]
-    fn image_post_collects_live_photo_and_static_image_urls() {
+    fn live_photo_post_does_not_add_static_cover_as_extra_media() {
         let client = DouyinClient::new(AppConfig::default()).expect("client");
         let post = json!({
             "aweme_id": "7341234567890123456",
-            "desc": "mixed image post",
+            "desc": "live photo post",
             "author": {},
             "statistics": {},
             "status": {},
@@ -5950,9 +5949,7 @@ mod tests {
             video.live_photo_urls.as_ref().expect("live photos"),
             &vec!["https://example.com/live-photo.mp4".to_string()]
         );
-        assert_eq!(
-            video.image_urls.as_ref().expect("images"),
-            &vec!["https://example.com/image-large.jpeg".to_string()]
-        );
+        assert!(video.image_urls.is_none());
+        assert_eq!(video.media_type, MediaType::LivePhoto);
     }
 }

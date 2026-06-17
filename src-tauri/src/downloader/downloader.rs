@@ -5,7 +5,7 @@ use crate::api::DouyinClient;
 use crate::config::{get_user_agent, AppConfig};
 use crate::history::HistoryManager;
 use anyhow::{anyhow, Result};
-use chrono::Local;
+use chrono::{Local, TimeZone};
 use futures::StreamExt;
 use reqwest::header::{
     HeaderMap, HeaderValue, ACCEPT, ACCEPT_ENCODING, CONTENT_TYPE, COOKIE, RANGE, REFERER,
@@ -196,6 +196,7 @@ impl Downloader {
             video.video.cover.clone(),
             video.media_type.clone(),
             media_urls,
+            video.create_time,
             Some(base_path),
         )
         .await
@@ -212,6 +213,7 @@ impl Downloader {
         cover: String,
         media_type: MediaType,
         media_urls: Vec<DownloadMediaItem>,
+        published_at: i64,
         save_path: Option<PathBuf>,
     ) -> Result<String> {
         if media_urls.is_empty() {
@@ -225,6 +227,7 @@ impl Downloader {
             &base_path,
             &author,
             media_type_name(&media_type),
+            published_at,
         );
         let filename = generate_filename_with_config(
             &self.config,
@@ -232,6 +235,7 @@ impl Downloader {
             &aweme_id,
             &author,
             media_type_name(&media_type),
+            published_at,
         );
 
         let task = DownloadTask {
@@ -1232,6 +1236,7 @@ impl Downloader {
             &base_path,
             &video.author.nickname,
             media_type_name(&video.media_type),
+            video.create_time,
         );
         let filename = generate_filename_with_config(
             &config,
@@ -1239,6 +1244,7 @@ impl Downloader {
             &video.aweme_id,
             &video.author.nickname,
             media_type_name(&video.media_type),
+            video.create_time,
         );
         let display_name = truncate_chars(&video.desc, 20);
 
@@ -1615,6 +1621,7 @@ impl Downloader {
                 &base_path,
                 &video.author.nickname,
                 media_type_name(&video.media_type),
+                video.create_time,
             );
             let filename = generate_filename_with_config(
                 &self.config,
@@ -1622,6 +1629,7 @@ impl Downloader {
                 &video.aweme_id,
                 &video.author.nickname,
                 media_type_name(&video.media_type),
+                video.create_time,
             );
 
             let task = DownloadTask {
@@ -2198,16 +2206,33 @@ fn template_value(
     aweme_id: &str,
     author: &str,
     media_type: &str,
+    template_time: &chrono::DateTime<Local>,
 ) -> String {
     match token {
         "title" => title.to_string(),
         "aweme_id" => aweme_id.to_string(),
         "author" => author.to_string(),
-        "date" => Local::now().format("%Y%m%d").to_string(),
-        "time" => Local::now().format("%H%M%S").to_string(),
+        "date" => template_time.format("%Y%m%d").to_string(),
+        "time" => template_time.format("%H%M%S").to_string(),
         "media_type" => media_type.to_string(),
         _ => String::new(),
     }
+}
+
+fn template_datetime(create_time: i64) -> chrono::DateTime<Local> {
+    let seconds = if create_time > 1_000_000_000_000 {
+        create_time / 1000
+    } else {
+        create_time
+    };
+
+    if seconds > 0 {
+        if let Some(datetime) = Local.timestamp_opt(seconds, 0).single() {
+            return datetime;
+        }
+    }
+
+    Local::now()
 }
 
 fn render_template(
@@ -2216,9 +2241,11 @@ fn render_template(
     aweme_id: &str,
     author: &str,
     media_type: &str,
+    create_time: i64,
 ) -> String {
     let mut output = String::new();
     let mut chars = template.chars().peekable();
+    let template_time = template_datetime(create_time);
 
     while let Some(ch) = chars.next() {
         if ch != '{' {
@@ -2237,7 +2264,14 @@ fn render_template(
         }
 
         if closed {
-            output.push_str(&template_value(&token, title, aweme_id, author, media_type));
+            output.push_str(&template_value(
+                &token,
+                title,
+                aweme_id,
+                author,
+                media_type,
+                &template_time,
+            ));
         } else {
             output.push('{');
             output.push_str(&token);
@@ -2666,6 +2700,7 @@ fn generate_filename_with_config(
     aweme_id: &str,
     author: &str,
     media_type: &str,
+    create_time: i64,
 ) -> String {
     let normalized_title = desc.split_whitespace().collect::<Vec<_>>().join(" ");
     let normalized_aweme_id = aweme_id.trim();
@@ -2685,6 +2720,7 @@ fn generate_filename_with_config(
         normalized_aweme_id,
         author.trim(),
         media_type,
+        create_time,
     );
     let sanitized = sanitize_filename(&rendered);
     let protected_suffix = if template.contains("{aweme_id}") && !normalized_aweme_id.is_empty() {
@@ -2716,6 +2752,7 @@ fn build_output_dir(
     base_path: &Path,
     author: &str,
     media_type: &str,
+    create_time: i64,
 ) -> PathBuf {
     if !config.auto_create_folder {
         return base_path.to_path_buf();
@@ -2726,7 +2763,7 @@ fn build_output_dir(
     } else {
         config.folder_name_template.trim()
     };
-    let rendered = render_template(template, "", "", author.trim(), media_type);
+    let rendered = render_template(template, "", "", author.trim(), media_type, create_time);
     let folder = sanitize_filename(&rendered);
     if folder.is_empty() {
         base_path.join("未知作者")
@@ -2975,6 +3012,7 @@ mod tests {
             aweme_id,
             "作者",
             "video",
+            0,
         );
 
         assert_eq!(filename, "这是 一个 完整 标题 第二段 文案");
@@ -2993,6 +3031,7 @@ mod tests {
             aweme_id,
             "作者",
             "image",
+            0,
         );
 
         assert!(filename.ends_with(aweme_id));
@@ -3012,11 +3051,41 @@ mod tests {
             aweme_id,
             "作者",
             "video",
+            0,
         );
 
         assert!(filename.starts_with(&"abcdefghijklmnopqrstuvwxyz".repeat(6)));
         assert!(filename.ends_with(aweme_id));
         assert!(filename.len() <= MAX_FILENAME_BYTES);
+    }
+
+    #[test]
+    fn filename_template_uses_work_create_time_for_date_tokens() {
+        let config = AppConfig {
+            filename_template: "{date}_{time}_{title}_{aweme_id}".to_string(),
+            ..Default::default()
+        };
+        let aweme_id = "7380011223344556677";
+        let create_time = 1_704_067_205;
+        let expected_prefix = Local
+            .timestamp_opt(create_time, 0)
+            .single()
+            .unwrap()
+            .format("%Y%m%d_%H%M%S")
+            .to_string();
+        let filename = generate_filename_with_config(
+            &config,
+            "跨年作品",
+            aweme_id,
+            "作者",
+            "video",
+            create_time,
+        );
+
+        assert_eq!(
+            filename,
+            format!("{}_跨年作品_{}", expected_prefix, aweme_id)
+        );
     }
 
     #[test]
@@ -3029,12 +3098,12 @@ mod tests {
         };
 
         assert_eq!(
-            build_output_dir(&config, &base, "作者/名", "video"),
+            build_output_dir(&config, &base, "作者/名", "video", 0),
             base.join("作者_名_video")
         );
 
         config.auto_create_folder = false;
-        assert_eq!(build_output_dir(&config, &base, "作者", "video"), base);
+        assert_eq!(build_output_dir(&config, &base, "作者", "video", 0), base);
     }
 
     #[test]
@@ -3047,7 +3116,7 @@ mod tests {
         };
 
         assert_eq!(
-            build_output_dir(&config, &base, "作者*星号", "video"),
+            build_output_dir(&config, &base, "作者*星号", "video", 0),
             base.join("作者_星号")
         );
     }

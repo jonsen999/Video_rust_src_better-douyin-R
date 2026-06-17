@@ -99,7 +99,7 @@ enum ConfigCommands {
     ///   download_path    - 下载目录（绝对路径）
     ///   max_concurrent   - 最大并发下载数（1-20）
     ///   download_quality - 下载质量：auto / highest / h264 / smallest
-    ///   filename_template    - 文件名模板，支持 {title} {aweme_id} {author} {date}
+    ///   filename_template    - 文件名模板，支持 {title} {aweme_id} {author} {date} {time}
     ///   folder_name_template - 文件夹模板
     ///   auto_create_folder   - 是否自动创建子目录：true / false
     ///   save_metadata        - 是否保存元数据：true / false
