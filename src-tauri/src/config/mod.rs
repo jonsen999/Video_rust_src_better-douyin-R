@@ -105,6 +105,37 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub fn canonical_download_quality(value: &str) -> Option<&'static str> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some("auto"),
+            "highest" => Some("highest"),
+            "h264" => Some("h264"),
+            "smallest" => Some("smallest"),
+            "480p" | "p480" => Some("480p"),
+            "720p" | "p720" => Some("720p"),
+            "1080p" | "p1080" => Some("1080p"),
+            "2k" | "1440p" | "p1440" => Some("2k"),
+            "4k" | "2160p" | "p2160" => Some("4k"),
+            _ => None,
+        }
+    }
+
+    pub fn normalize_download_quality(value: &str) -> String {
+        Self::canonical_download_quality(value)
+            .unwrap_or("auto")
+            .to_string()
+    }
+
+    fn normalize(&mut self) {
+        self.download_quality = Self::normalize_download_quality(&self.download_quality);
+    }
+
+    fn normalized(&self) -> Self {
+        let mut config = self.clone();
+        config.normalize();
+        config
+    }
+
     pub fn load() -> Self {
         let config_path = Self::config_path();
 
@@ -115,8 +146,11 @@ impl AppConfig {
 
         if config_path.exists() {
             match fs::read_to_string(&config_path) {
-                Ok(content) => match serde_json::from_str(&content) {
-                    Ok(config) => return config,
+                Ok(content) => match serde_json::from_str::<Self>(&content) {
+                    Ok(mut config) => {
+                        config.normalize();
+                        return config;
+                    }
                     Err(e) => {
                         log::warn!("Failed to parse config file: {}, using default", e);
                     }
@@ -132,6 +166,7 @@ impl AppConfig {
 
     pub fn save(&self) -> anyhow::Result<()> {
         self.validate()?;
+        let config = self.normalized();
 
         let config_path = Self::config_path();
 
@@ -139,7 +174,7 @@ impl AppConfig {
             fs::create_dir_all(parent)?;
         }
 
-        let mut content = serde_json::to_string_pretty(self)?;
+        let mut content = serde_json::to_string_pretty(&config)?;
         content.push('\n');
         write_file_atomically(&config_path, content.as_bytes())?;
 
@@ -174,12 +209,9 @@ impl AppConfig {
             }
         }
 
-        if !matches!(
-            self.download_quality.as_str(),
-            "auto" | "highest" | "h264" | "smallest"
-        ) {
+        if Self::canonical_download_quality(&self.download_quality).is_none() {
             anyhow::bail!(
-                "download_quality must be one of: auto, highest, h264, smallest, got {}",
+                "download_quality must be one of: auto, highest, h264, smallest, 480p, 720p, 1080p, 2k, 1440p, 4k, 2160p, got {}",
                 self.download_quality
             );
         }
@@ -306,5 +338,19 @@ mod tests {
         assert_eq!(config.cookie, "sessionid=test");
         assert_eq!(config.max_concurrent, 3);
         assert_eq!(config.download_quality, "auto");
+    }
+
+    #[test]
+    fn normalizes_download_quality_aliases() {
+        assert_eq!(AppConfig::normalize_download_quality("2160p"), "4k");
+        assert_eq!(AppConfig::normalize_download_quality("1440p"), "2k");
+        assert_eq!(AppConfig::normalize_download_quality("p1080"), "1080p");
+        assert_eq!(AppConfig::normalize_download_quality("unknown"), "auto");
+
+        let config = AppConfig {
+            download_quality: "2160p".to_string(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
     }
 }

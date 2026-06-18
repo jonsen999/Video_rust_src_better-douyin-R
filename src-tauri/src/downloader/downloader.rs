@@ -4,6 +4,7 @@ use crate::api::types::{DownloadMediaItem, DownloadStatus, DownloadTask, MediaTy
 use crate::api::DouyinClient;
 use crate::config::{get_user_agent, AppConfig};
 use crate::history::HistoryManager;
+use crate::media_utils::is_dash_video_only_url;
 use anyhow::{anyhow, Result};
 use chrono::{Local, TimeZone};
 use futures::StreamExt;
@@ -30,6 +31,7 @@ enum DownloadQuality {
     Highest,
     H264,
     Smallest,
+    TargetHeight(i32),
 }
 
 impl DownloadQuality {
@@ -38,9 +40,143 @@ impl DownloadQuality {
             "highest" => Self::Highest,
             "h264" => Self::H264,
             "smallest" => Self::Smallest,
+            "480p" | "p480" => Self::TargetHeight(480),
+            "720p" | "p720" => Self::TargetHeight(720),
+            "1080p" | "p1080" => Self::TargetHeight(1080),
+            "2k" | "1440p" | "p1440" => Self::TargetHeight(1440),
+            "4k" | "2160p" | "p2160" => Self::TargetHeight(2160),
             _ => Self::Auto,
         }
     }
+}
+
+fn parse_quality_height_from_text(value: &str) -> i32 {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.contains("4k") || normalized.contains("uhd") || normalized.contains("2160") {
+        return 2160;
+    }
+    if normalized.contains("2k") || normalized.contains("qhd") || normalized.contains("1440") {
+        return 1440;
+    }
+
+    for token in normalized.split(|ch: char| !ch.is_ascii_alphanumeric()) {
+        if let Some(number) = token.strip_suffix('p') {
+            if let Ok(height) = number.parse::<i32>() {
+                if (240..=4320).contains(&height) {
+                    return height;
+                }
+            }
+        }
+        if let Ok(height) = token.parse::<i32>() {
+            if (240..=4320).contains(&height) {
+                return height;
+            }
+        }
+    }
+
+    0
+}
+
+fn nearest_standard_quality_height(value: i32) -> i32 {
+    if value <= 0 {
+        return 0;
+    }
+
+    const STANDARD_HEIGHTS: [i32; 9] = [4320, 2160, 1440, 1080, 720, 540, 480, 360, 240];
+    let nearest = STANDARD_HEIGHTS
+        .into_iter()
+        .min_by_key(|height| (height - value).abs())
+        .unwrap_or(0);
+    let tolerance = std::cmp::max(24, nearest * 12 / 100);
+    if (nearest - value).abs() <= tolerance {
+        return nearest;
+    }
+
+    if (240..=4320).contains(&value) {
+        value
+    } else {
+        0
+    }
+}
+
+fn standard_quality_height_from_dimension(value: i32) -> i32 {
+    if value <= 0 {
+        return 0;
+    }
+
+    const STANDARD_HEIGHTS: [i32; 9] = [4320, 2160, 1440, 1080, 720, 540, 480, 360, 240];
+    let nearest = STANDARD_HEIGHTS
+        .into_iter()
+        .min_by_key(|height| (height - value).abs())
+        .unwrap_or(0);
+    let tolerance = std::cmp::max(16, nearest * 4 / 100);
+    if (nearest - value).abs() <= tolerance {
+        nearest
+    } else {
+        0
+    }
+}
+
+fn long_side_quality_height(value: i32) -> i32 {
+    if value <= 0 {
+        return 0;
+    }
+
+    const LONG_SIDE_TO_QUALITY: [(i32, i32); 7] = [
+        (3840, 2160),
+        (2560, 1440),
+        (1920, 1080),
+        (1280, 720),
+        (960, 540),
+        (854, 480),
+        (852, 480),
+    ];
+    for (long_side, quality_height) in LONG_SIDE_TO_QUALITY {
+        let tolerance = std::cmp::max(24, long_side * 4 / 100);
+        if (value - long_side).abs() <= tolerance {
+            return quality_height;
+        }
+    }
+
+    0
+}
+
+fn dimension_quality_height(width: i32, height: i32) -> i32 {
+    let width = width.max(0);
+    let height = height.max(0);
+
+    if width > 0 && height > 0 {
+        let measured = [
+            standard_quality_height_from_dimension(width),
+            standard_quality_height_from_dimension(height),
+            long_side_quality_height(width),
+            long_side_quality_height(height),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+        if measured > 0 {
+            return measured;
+        }
+        return nearest_standard_quality_height(width.max(height));
+    }
+
+    let value = width.max(height);
+    if value <= 0 {
+        return 0;
+    }
+
+    let standard_height = standard_quality_height_from_dimension(value);
+    if standard_height > 0 {
+        return standard_height;
+    }
+
+    let long_side_height = long_side_quality_height(value);
+    if long_side_height > 0 {
+        return long_side_height;
+    }
+
+    nearest_standard_quality_height(value)
 }
 
 fn bit_rate_metric(bit_rate: &crate::api::types::BitRateInfo) -> i64 {
@@ -59,11 +195,26 @@ fn bit_rate_metric(bit_rate: &crate::api::types::BitRateInfo) -> i64 {
     0
 }
 
+fn bit_rate_height(bit_rate: &crate::api::types::BitRateInfo) -> i32 {
+    let mut height = 0;
+    let gear_height = parse_quality_height_from_text(&bit_rate.gear_name);
+    if gear_height > 0 {
+        height = height.max(gear_height);
+    }
+    match bit_rate.quality_type {
+        72 | 73 => height = height.max(2160),
+        _ => {}
+    }
+    height.max(dimension_quality_height(bit_rate.width, bit_rate.height))
+}
+
 #[derive(Debug, Clone)]
 struct VideoCandidate {
     url: String,
     metric: i64,
+    height: i32,
     is_h264: bool,
+    is_quality_candidate: bool,
     is_download_addr: bool,
     is_lowbr: bool,
     is_watermark: bool,
@@ -2206,20 +2357,24 @@ fn template_value(
     aweme_id: &str,
     author: &str,
     media_type: &str,
-    template_time: &chrono::DateTime<Local>,
+    template_time: Option<&chrono::DateTime<Local>>,
 ) -> String {
     match token {
         "title" => title.to_string(),
         "aweme_id" => aweme_id.to_string(),
         "author" => author.to_string(),
-        "date" => template_time.format("%Y%m%d").to_string(),
-        "time" => template_time.format("%H%M%S").to_string(),
+        "date" => template_time
+            .map(|time| time.format("%Y%m%d").to_string())
+            .unwrap_or_default(),
+        "time" => template_time
+            .map(|time| time.format("%Y%m%d_%H%M%S").to_string())
+            .unwrap_or_default(),
         "media_type" => media_type.to_string(),
         _ => String::new(),
     }
 }
 
-fn template_datetime(create_time: i64) -> chrono::DateTime<Local> {
+fn template_datetime(create_time: i64) -> Option<chrono::DateTime<Local>> {
     let seconds = if create_time > 1_000_000_000_000 {
         create_time / 1000
     } else {
@@ -2228,11 +2383,11 @@ fn template_datetime(create_time: i64) -> chrono::DateTime<Local> {
 
     if seconds > 0 {
         if let Some(datetime) = Local.timestamp_opt(seconds, 0).single() {
-            return datetime;
+            return Some(datetime);
         }
     }
 
-    Local::now()
+    None
 }
 
 fn render_template(
@@ -2270,7 +2425,7 @@ fn render_template(
                 aweme_id,
                 author,
                 media_type,
-                &template_time,
+                template_time.as_ref(),
             ));
         } else {
             output.push('{');
@@ -2322,40 +2477,79 @@ fn collect_video_candidates(video: &VideoInfo) -> Vec<VideoCandidate> {
     let mut candidates = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
+    let top_level_height = dimension_quality_height(video.video.width, video.video.height)
+        .max(parse_quality_height_from_text(&video.video.ratio));
+    let lowbr_height = if top_level_height > 0 {
+        top_level_height.min(480)
+    } else {
+        480
+    };
+
     let mut push_candidate = |url: Option<String>,
                               metric: i64,
+                              height: i32,
                               is_h264: bool,
+                              is_quality_candidate: bool,
                               is_download_addr: bool,
                               is_lowbr: bool| {
         let Some(url) = url else {
             return;
         };
         let url = clean_video_download_url(&url);
-        if url.trim().is_empty() || !seen.insert(url.clone()) {
+        if url.trim().is_empty() || is_dash_video_only_url(&url) || !seen.insert(url.clone()) {
             return;
         }
         candidates.push(VideoCandidate {
             is_watermark: is_watermark_url(&url),
             url,
             metric,
+            height,
             is_h264,
+            is_quality_candidate,
             is_download_addr,
             is_lowbr,
         });
     };
 
-    push_candidate(video.video.download_addr.clone(), 0, false, true, false);
-    push_candidate(video.video.play_addr_h264.clone(), 0, true, false, false);
-    push_candidate(video.video.play_addr_lowbr.clone(), 1, true, false, true);
+    push_candidate(
+        video.video.download_addr.clone(),
+        0,
+        top_level_height,
+        false,
+        false,
+        true,
+        false,
+    );
+    push_candidate(
+        video.video.play_addr_h264.clone(),
+        0,
+        top_level_height,
+        true,
+        false,
+        false,
+        false,
+    );
+    push_candidate(
+        video.video.play_addr_lowbr.clone(),
+        1,
+        lowbr_height,
+        true,
+        false,
+        false,
+        true,
+    );
 
     if let Some(bit_rates) = &video.video.bit_rate {
         for bit_rate in bit_rates {
             let metric = bit_rate_metric(bit_rate);
+            let height = bit_rate_height(bit_rate);
             let h264_metric = if metric > 0 { metric + 1 } else { 0 };
 
             push_candidate(
                 bit_rate.play_addr_h264.clone(),
                 h264_metric,
+                height,
+                true,
                 true,
                 false,
                 false,
@@ -2363,17 +2557,61 @@ fn collect_video_candidates(video: &VideoInfo) -> Vec<VideoCandidate> {
             push_candidate(
                 bit_rate.play_addr.clone(),
                 metric,
+                height,
                 !bit_rate.is_h265,
+                true,
                 false,
                 false,
             );
         }
     }
 
-    push_candidate(video.video.preview_addr.clone(), 0, false, false, false);
-    push_candidate(Some(video.video.play_addr.clone()), 0, false, false, false);
+    push_candidate(
+        video.video.preview_addr.clone(),
+        0,
+        top_level_height,
+        false,
+        false,
+        false,
+        false,
+    );
+    push_candidate(
+        Some(video.video.play_addr.clone()),
+        0,
+        top_level_height,
+        false,
+        false,
+        false,
+        false,
+    );
 
     candidates
+}
+
+pub(crate) fn available_video_quality_height(video: &VideoInfo) -> i32 {
+    collect_video_candidates(video)
+        .into_iter()
+        .filter(|candidate| {
+            !candidate.is_watermark
+                && !candidate.is_download_addr
+                && !candidate.is_lowbr
+                && candidate.height > 0
+        })
+        .map(|candidate| candidate.height)
+        .max()
+        .unwrap_or(0)
+}
+
+pub(crate) fn video_quality_candidate_count(video: &VideoInfo) -> usize {
+    collect_video_candidates(video)
+        .into_iter()
+        .filter(|candidate| {
+            !candidate.is_watermark
+                && candidate.is_quality_candidate
+                && !candidate.is_download_addr
+                && !candidate.is_lowbr
+        })
+        .count()
 }
 
 fn clean_video_download_url(url: &str) -> String {
@@ -2396,6 +2634,32 @@ async fn request_media_with_fallback(
     media: &DownloadMediaItem,
     headers: &HeaderMap,
 ) -> Result<(reqwest::Response, String)> {
+    if media.r#type == "video" && is_dash_video_only_url(&media.url) {
+        if aweme_id.trim().is_empty() {
+            return Err(anyhow!("下载地址是无声音轨的视频分片，缺少作品ID无法刷新"));
+        }
+
+        let fallback_urls = fresh_video_download_urls(config, aweme_id)
+            .await
+            .unwrap_or_default();
+        for url in fallback_urls {
+            if is_dash_video_only_url(&url) {
+                continue;
+            }
+
+            let fallback_response = client.get(&url).headers(headers.clone()).send().await?;
+            if fallback_response.status().is_success() {
+                log::info!(
+                    "download url refreshed from dash video-only source: aweme_id={}",
+                    aweme_id
+                );
+                return Ok((fallback_response, url));
+            }
+        }
+
+        return Err(anyhow!("没有可用的带音频视频下载地址"));
+    }
+
     let response = client
         .get(&media.url)
         .headers(headers.clone())
@@ -2415,7 +2679,7 @@ async fn request_media_with_fallback(
         .await
         .unwrap_or_default();
     for url in fallback_urls {
-        if url == media.url {
+        if url == media.url || is_dash_video_only_url(&url) {
             continue;
         }
 
@@ -2614,14 +2878,7 @@ fn unique_output_path(
         sanitize_filename(&format!("{}_{:02}", base_name, index + 1))
     };
     let extension = sanitize_extension(extension);
-    let mut path = save_dir.join(format!("{}.{}", stem, extension));
-
-    if path.exists() {
-        let timestamp = Local::now().timestamp();
-        path = save_dir.join(format!("{}_{}.{}", stem, timestamp, extension));
-    }
-
-    path
+    save_dir.join(format!("{}.{}", stem, extension))
 }
 
 async fn create_unique_output_file(
@@ -2777,6 +3034,56 @@ fn select_video_url(video: &VideoInfo, quality: DownloadQuality) -> Option<Strin
     ordered_video_urls(video, quality).into_iter().next()
 }
 
+fn best_target_candidate<'a>(
+    candidates: &[&'a VideoCandidate],
+    target_height: i32,
+) -> Option<&'a VideoCandidate> {
+    let explicit_measured = candidates
+        .iter()
+        .copied()
+        .filter(|candidate| {
+            candidate.is_quality_candidate && candidate.height > 0 && !candidate.is_download_addr
+        })
+        .collect::<Vec<_>>();
+    let fallback_measured;
+    let measured = if explicit_measured.is_empty() {
+        fallback_measured = candidates
+            .iter()
+            .copied()
+            .filter(|candidate| candidate.height > 0 && !candidate.is_download_addr)
+            .collect::<Vec<_>>();
+        &fallback_measured
+    } else {
+        &explicit_measured
+    };
+
+    if let Some(candidate) = measured
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.height <= target_height)
+        .max_by_key(|candidate| {
+            (
+                candidate.height,
+                if candidate.is_h264 { 1 } else { 0 },
+                candidate.metric,
+            )
+        })
+    {
+        return Some(candidate);
+    }
+
+    measured
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.height > target_height)
+        .min_by(|a, b| {
+            a.height
+                .cmp(&b.height)
+                .then_with(|| (if a.is_h264 { 0 } else { 1 }).cmp(&(if b.is_h264 { 0 } else { 1 })))
+                .then_with(|| b.metric.cmp(&a.metric))
+        })
+}
+
 fn ordered_video_urls(video: &VideoInfo, quality: DownloadQuality) -> Vec<String> {
     let candidates = collect_video_candidates(video);
 
@@ -2848,13 +3155,95 @@ fn ordered_video_urls(video: &VideoInfo, quality: DownloadQuality) -> Vec<String
             push(h264_best);
             push(first);
         }
+        DownloadQuality::TargetHeight(target_height) => {
+            let target_best = best_target_candidate(&clean_candidates, target_height);
+            let target_h264 = target_best.and_then(|selected| {
+                clean_candidates.iter().copied().find(|candidate| {
+                    candidate.is_h264
+                        && candidate.height == selected.height
+                        && !candidate.is_lowbr
+                        && !candidate.is_download_addr
+                })
+            });
+            push(target_best);
+            push(target_h264);
+            push(highest_metric);
+            push(h264_best);
+            push(download_addr);
+            push(first);
+        }
     }
 
     let mut rest = clean_candidates.to_vec();
-    rest.sort_by_key(|candidate| std::cmp::Reverse(candidate.metric));
+    match quality {
+        DownloadQuality::TargetHeight(target_height) => {
+            rest.sort_by(|a, b| {
+                let a_delta = if a.height > 0 {
+                    (a.height - target_height).abs()
+                } else {
+                    i32::MAX
+                };
+                let b_delta = if b.height > 0 {
+                    (b.height - target_height).abs()
+                } else {
+                    i32::MAX
+                };
+                a_delta
+                    .cmp(&b_delta)
+                    .then_with(|| b.height.cmp(&a.height))
+                    .then_with(|| b.metric.cmp(&a.metric))
+            });
+        }
+        _ => {
+            rest.sort_by_key(|candidate| std::cmp::Reverse(candidate.metric));
+        }
+    }
     for candidate in rest {
         push(Some(candidate));
     }
+
+    let quality_label = match quality {
+        DownloadQuality::Auto => "auto".to_string(),
+        DownloadQuality::Highest => "highest".to_string(),
+        DownloadQuality::H264 => "h264".to_string(),
+        DownloadQuality::Smallest => "smallest".to_string(),
+        DownloadQuality::TargetHeight(height) => format!("{height}p"),
+    };
+    let candidate_heights = clean_candidates
+        .iter()
+        .filter(|candidate| !candidate.is_download_addr && !candidate.is_lowbr)
+        .map(|candidate| {
+            format!(
+                "{}:{}:{}:{}",
+                candidate.height,
+                candidate.metric,
+                if candidate.is_h264 { "h264" } else { "main" },
+                if candidate.is_quality_candidate {
+                    "bitrate"
+                } else {
+                    "top"
+                }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let selected = ordered.first().and_then(|url| {
+        clean_candidates
+            .iter()
+            .find(|candidate| candidate.url == *url)
+    });
+    log::info!(
+        "video download quality selected: aweme_id={} quality={} candidates=[{}] selected_height={} selected_metric={} selected_h264={} selected_quality_candidate={}",
+        video.aweme_id,
+        quality_label,
+        candidate_heights,
+        selected.map(|candidate| candidate.height).unwrap_or(0),
+        selected.map(|candidate| candidate.metric).unwrap_or(0),
+        selected.map(|candidate| candidate.is_h264).unwrap_or(false),
+        selected
+            .map(|candidate| candidate.is_quality_candidate)
+            .unwrap_or(false)
+    );
 
     ordered
 }
@@ -2889,6 +3278,185 @@ mod tests {
         video
     }
 
+    fn video_with_resolution_candidates() -> VideoInfo {
+        let mut video = VideoInfo::default();
+        video.video.play_addr = "play-default".to_string();
+        video.video.height = 1080;
+        video.video.play_addr_h264 = Some("top-h264".to_string());
+        video.video.play_addr_lowbr = Some("lowbr".to_string());
+        video.video.bit_rate = Some(vec![
+            BitRateInfo {
+                data_size: 100,
+                bit_rate: 100,
+                height: 480,
+                play_addr: Some("p480".to_string()),
+                play_addr_h264: Some("p480-h264".to_string()),
+                ..Default::default()
+            },
+            BitRateInfo {
+                data_size: 300,
+                bit_rate: 300,
+                height: 720,
+                play_addr: Some("p720".to_string()),
+                play_addr_h264: Some("p720-h264".to_string()),
+                ..Default::default()
+            },
+            BitRateInfo {
+                data_size: 500,
+                bit_rate: 500,
+                gear_name: "normal_1080_0".to_string(),
+                height: 1920,
+                play_addr: Some("p1080".to_string()),
+                play_addr_h264: Some("p1080-h264".to_string()),
+                ..Default::default()
+            },
+            BitRateInfo {
+                data_size: 800,
+                bit_rate: 800,
+                gear_name: "normal_1080_1".to_string(),
+                height: 1920,
+                is_h265: true,
+                play_addr: Some("p1080-h265".to_string()),
+                ..Default::default()
+            },
+            BitRateInfo {
+                data_size: 700,
+                bit_rate: 700,
+                gear_name: "adapt_2k_1440p".to_string(),
+                play_addr: Some("p1440".to_string()),
+                play_addr_h264: Some("p1440-h264".to_string()),
+                ..Default::default()
+            },
+            BitRateInfo {
+                data_size: 900,
+                bit_rate: 900,
+                gear_name: "adapt_4k".to_string(),
+                play_addr: Some("p2160".to_string()),
+                play_addr_h264: Some("p2160-h264".to_string()),
+                ..Default::default()
+            },
+        ]);
+        video
+    }
+
+    fn video_with_sparse_resolution_candidates() -> VideoInfo {
+        let mut video = VideoInfo::default();
+        video.video.play_addr = "play-default".to_string();
+        video.video.bit_rate = Some(vec![
+            BitRateInfo {
+                data_size: 100,
+                bit_rate: 100,
+                height: 480,
+                play_addr: Some("sparse-480".to_string()),
+                play_addr_h264: Some("sparse-480-h264".to_string()),
+                ..Default::default()
+            },
+            BitRateInfo {
+                data_size: 500,
+                bit_rate: 500,
+                gear_name: "normal_1080_0".to_string(),
+                height: 1920,
+                play_addr: Some("sparse-1080".to_string()),
+                play_addr_h264: Some("sparse-1080-h264".to_string()),
+                ..Default::default()
+            },
+        ]);
+        video
+    }
+
+    fn video_with_top_level_low_resolution_and_quality_candidates(include_1080: bool) -> VideoInfo {
+        let mut bit_rates = vec![
+            BitRateInfo {
+                data_size: 100,
+                bit_rate: 100,
+                gear_name: "normal_540_0".to_string(),
+                height: 580,
+                play_addr: Some("toplow-540".to_string()),
+                play_addr_h264: Some("toplow-540-h264".to_string()),
+                ..Default::default()
+            },
+            BitRateInfo {
+                data_size: 300,
+                bit_rate: 300,
+                gear_name: "normal_720_0".to_string(),
+                height: 580,
+                play_addr: Some("toplow-720".to_string()),
+                play_addr_h264: Some("toplow-720-h264".to_string()),
+                ..Default::default()
+            },
+        ];
+        if include_1080 {
+            bit_rates.push(BitRateInfo {
+                data_size: 500,
+                bit_rate: 500,
+                gear_name: "normal_1080_0".to_string(),
+                height: 580,
+                play_addr: Some("toplow-1080".to_string()),
+                play_addr_h264: Some("toplow-1080-h264".to_string()),
+                ..Default::default()
+            });
+        }
+
+        let mut video = VideoInfo::default();
+        video.video.play_addr = "toplow-default".to_string();
+        video.video.height = 580;
+        video.video.play_addr_h264 = Some("toplow-top-h264".to_string());
+        video.video.bit_rate = Some(bit_rates);
+        video
+    }
+
+    fn video_with_portrait_dimension_quality_candidates() -> VideoInfo {
+        let mut video = VideoInfo::default();
+        video.video.play_addr = "portrait-default".to_string();
+        video.video.bit_rate = Some(vec![
+            BitRateInfo {
+                data_size: 300,
+                bit_rate: 300,
+                width: 720,
+                height: 1280,
+                play_addr: Some("portrait-720".to_string()),
+                play_addr_h264: Some("portrait-720-h264".to_string()),
+                ..Default::default()
+            },
+            BitRateInfo {
+                data_size: 700,
+                bit_rate: 700,
+                width: 1440,
+                height: 2560,
+                play_addr: Some("portrait-2k".to_string()),
+                play_addr_h264: Some("portrait-2k-h264".to_string()),
+                ..Default::default()
+            },
+        ]);
+        video
+    }
+
+    fn video_with_narrow_portrait_1080_candidate() -> VideoInfo {
+        let mut video = VideoInfo::default();
+        video.video.play_addr = "narrow-default".to_string();
+        video.video.bit_rate = Some(vec![
+            BitRateInfo {
+                data_size: 300,
+                bit_rate: 300,
+                width: 404,
+                height: 720,
+                play_addr: Some("narrow-720".to_string()),
+                play_addr_h264: Some("narrow-720-h264".to_string()),
+                ..Default::default()
+            },
+            BitRateInfo {
+                data_size: 500,
+                bit_rate: 500,
+                width: 608,
+                height: 1080,
+                play_addr: Some("narrow-1080".to_string()),
+                play_addr_h264: Some("narrow-1080-h264".to_string()),
+                ..Default::default()
+            },
+        ]);
+        video
+    }
+
     #[test]
     fn auto_prefers_best_h264_candidate() {
         let video = video_with_quality_candidates();
@@ -2907,6 +3475,25 @@ mod tests {
         assert_eq!(
             select_video_url(&video, DownloadQuality::Auto).as_deref(),
             Some("https://example.com/clean.mp4")
+        );
+    }
+
+    #[test]
+    fn selection_skips_dash_video_only_candidates() {
+        let mut video = VideoInfo::default();
+        video.video.play_addr = "https://example.com/progressive.mp4".to_string();
+        video.video.bit_rate = Some(vec![BitRateInfo {
+            data_size: 900,
+            bit_rate: 900,
+            gear_name: "adapt_4k".to_string(),
+            play_addr: Some("https://example.com/media-video-avc1".to_string()),
+            play_addr_h264: Some("https://example.com/media_video_h264".to_string()),
+            ..Default::default()
+        }]);
+
+        assert_eq!(
+            select_video_url(&video, DownloadQuality::TargetHeight(2160)).as_deref(),
+            Some("https://example.com/progressive.mp4")
         );
     }
 
@@ -2939,6 +3526,101 @@ mod tests {
     }
 
     #[test]
+    fn target_quality_prefers_closest_resolution_not_above_target() {
+        let video = video_with_resolution_candidates();
+
+        assert_eq!(
+            select_video_url(&video, DownloadQuality::TargetHeight(480)).as_deref(),
+            Some("p480-h264")
+        );
+        assert_eq!(
+            select_video_url(&video, DownloadQuality::TargetHeight(1080)).as_deref(),
+            Some("p1080-h264")
+        );
+        assert_eq!(
+            select_video_url(&video, DownloadQuality::TargetHeight(1440)).as_deref(),
+            Some("p1440-h264")
+        );
+        assert_eq!(
+            select_video_url(&video, DownloadQuality::TargetHeight(2160)).as_deref(),
+            Some("p2160-h264")
+        );
+    }
+
+    #[test]
+    fn target_quality_is_a_maximum_height_with_downward_fallback() {
+        let video = video_with_sparse_resolution_candidates();
+
+        assert_eq!(
+            select_video_url(&video, DownloadQuality::TargetHeight(2160)).as_deref(),
+            Some("sparse-1080-h264")
+        );
+        assert_eq!(
+            select_video_url(&video, DownloadQuality::TargetHeight(1080)).as_deref(),
+            Some("sparse-1080-h264")
+        );
+        assert_eq!(
+            select_video_url(&video, DownloadQuality::TargetHeight(720)).as_deref(),
+            Some("sparse-480-h264")
+        );
+    }
+
+    #[test]
+    fn target_quality_prefers_explicit_bitrate_quality_over_top_level_url() {
+        let video = video_with_top_level_low_resolution_and_quality_candidates(false);
+
+        assert_eq!(
+            select_video_url(&video, DownloadQuality::TargetHeight(2160)).as_deref(),
+            Some("toplow-720-h264")
+        );
+
+        let video = video_with_top_level_low_resolution_and_quality_candidates(true);
+        assert_eq!(
+            select_video_url(&video, DownloadQuality::TargetHeight(2160)).as_deref(),
+            Some("toplow-1080-h264")
+        );
+    }
+
+    #[test]
+    fn target_quality_uses_short_side_for_portrait_2k_candidates() {
+        let video = video_with_portrait_dimension_quality_candidates();
+
+        assert_eq!(
+            select_video_url(&video, DownloadQuality::TargetHeight(2160)).as_deref(),
+            Some("portrait-2k-h264")
+        );
+        assert_eq!(
+            select_video_url(&video, DownloadQuality::TargetHeight(1080)).as_deref(),
+            Some("portrait-720-h264")
+        );
+    }
+
+    #[test]
+    fn target_quality_uses_short_side_for_top_level_portrait_candidate() {
+        let mut video = VideoInfo::default();
+        video.video.play_addr = "top-portrait-2k".to_string();
+        video.video.play_addr_h264 = Some("top-portrait-2k-h264".to_string());
+        video.video.play_addr_lowbr = Some("top-portrait-low".to_string());
+        video.video.width = 1440;
+        video.video.height = 2560;
+
+        assert_eq!(
+            select_video_url(&video, DownloadQuality::TargetHeight(2160)).as_deref(),
+            Some("top-portrait-2k-h264")
+        );
+    }
+
+    #[test]
+    fn target_quality_keeps_portrait_1080_candidate_above_720() {
+        let video = video_with_narrow_portrait_1080_candidate();
+
+        assert_eq!(
+            select_video_url(&video, DownloadQuality::TargetHeight(2160)).as_deref(),
+            Some("narrow-1080-h264")
+        );
+    }
+
+    #[test]
     fn downloader_uses_updated_quality_config() {
         let mut config = AppConfig {
             download_quality: "auto".to_string(),
@@ -2956,7 +3638,9 @@ mod tests {
         );
 
         config.download_quality = "smallest".to_string();
-        downloader.update_config(config).expect("update config");
+        downloader
+            .update_config(config.clone())
+            .expect("update config");
 
         assert_eq!(
             downloader
@@ -2964,6 +3648,18 @@ mod tests {
                 .first()
                 .map(|item| item.url.as_str()),
             Some("lowbr")
+        );
+
+        config.download_quality = "1080p".to_string();
+        downloader.update_config(config).expect("update config");
+
+        let video = video_with_resolution_candidates();
+        assert_eq!(
+            downloader
+                .collect_download_media_items(&video)
+                .first()
+                .map(|item| item.url.as_str()),
+            Some("p1080-h264")
         );
     }
 
@@ -3071,7 +3767,7 @@ mod tests {
             .timestamp_opt(create_time, 0)
             .single()
             .unwrap()
-            .format("%Y%m%d_%H%M%S")
+            .format("%Y%m%d_%Y%m%d_%H%M%S")
             .to_string();
         let filename = generate_filename_with_config(
             &config,
@@ -3086,6 +3782,25 @@ mod tests {
             filename,
             format!("{}_跨年作品_{}", expected_prefix, aweme_id)
         );
+    }
+
+    #[test]
+    fn filename_template_leaves_date_tokens_empty_without_create_time() {
+        let config = AppConfig {
+            filename_template: "{date}_{time}_{title}_{aweme_id}".to_string(),
+            ..Default::default()
+        };
+
+        let filename = generate_filename_with_config(
+            &config,
+            "无发布时间作品",
+            "7380011223344556677",
+            "作者",
+            "video",
+            0,
+        );
+
+        assert_eq!(filename, "无发布时间作品_7380011223344556677");
     }
 
     #[test]
@@ -3135,6 +3850,10 @@ mod tests {
         drop(created_file);
 
         assert_ne!(created_path, existing);
+        assert_eq!(
+            created_path.file_name().and_then(|name| name.to_str()),
+            Some("clip_2.mp4")
+        );
         assert!(created_path.exists());
         assert_eq!(
             std::fs::read(&existing).expect("read existing"),

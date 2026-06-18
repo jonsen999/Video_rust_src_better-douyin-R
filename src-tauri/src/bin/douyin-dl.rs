@@ -98,7 +98,7 @@ enum ConfigCommands {
     ///   cookie           - 抖音 Cookie 字符串（从浏览器复制）
     ///   download_path    - 下载目录（绝对路径）
     ///   max_concurrent   - 最大并发下载数（1-20）
-    ///   download_quality - 下载质量：auto / highest / h264 / smallest
+    ///   download_quality - 下载质量：auto / highest / h264 / smallest / 480p / 720p / 1080p / 2k / 1440p / 4k / 2160p
     ///   filename_template    - 文件名模板，支持 {title} {aweme_id} {author} {date} {time}
     ///   folder_name_template - 文件夹模板
     ///   auto_create_folder   - 是否自动创建子目录：true / false
@@ -374,13 +374,12 @@ fn cmd_config(cmd: ConfigCommands) -> Result<()> {
                     config.max_concurrent = n;
                 }
                 "download_quality" => {
-                    let v = value.to_lowercase();
-                    if !matches!(v.as_str(), "auto" | "highest" | "h264" | "smallest") {
+                    let Some(v) = AppConfig::canonical_download_quality(&value) else {
                         return Err(anyhow!(
-                            "download_quality 必须是 auto / highest / h264 / smallest"
+                            "download_quality 必须是 auto / highest / h264 / smallest / 480p / 720p / 1080p / 2k / 1440p / 4k / 2160p"
                         ));
-                    }
-                    config.download_quality = v;
+                    };
+                    config.download_quality = v.to_string();
                 }
                 "filename_template" => config.filename_template = value,
                 "folder_name_template" => config.folder_name_template = value,
@@ -588,7 +587,7 @@ async fn cmd_feed(count: u32) -> Result<()> {
     let client = make_client(&config)?;
 
     let (videos, _cursor, _has_more) = client
-        .get_recommended_feed(0, count.min(50))
+        .get_recommended_feed(0, count.min(50), "featured")
         .await
         .map_err(|e| anyhow!("获取推荐视频失败：{}", e))?;
 

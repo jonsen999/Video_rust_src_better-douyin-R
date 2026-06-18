@@ -8,15 +8,18 @@ pub mod history;
 pub mod media_proxy;
 pub mod media_utils;
 pub mod sign;
+pub mod reporter;
 
-use api::{CookieStatus, DouyinClient, DownloadHistory, UserInfo, VideoInfo};
+use api::{BitRateInfo, CookieStatus, DouyinClient, DownloadHistory, UserInfo, VideoInfo};
 use base64::Engine;
 use config::{AppConfig, RelationSignerConfig};
 use cookie::{
     has_douyin_login_cookie, has_douyin_session_cookie, parse_cookie_string,
     serialize_cookie_string, verify_douyin_login_cookie, CookieLoginSession,
 };
-use downloader::{Downloader, DownloaderEvent};
+use downloader::{
+    available_video_quality_height, video_quality_candidate_count, Downloader, DownloaderEvent,
+};
 use futures::StreamExt;
 use history::HistoryManager;
 use media_utils::*;
@@ -84,10 +87,9 @@ fn clear_douyin_login_cookies(window: &tauri::WebviewWindow) {
                     domain == "douyin.com" || domain.ends_with(".douyin.com")
                 })
                 .unwrap_or(false);
-            let is_login_cookie =
-                DOUYIN_LOGIN_COOKIE_NAMES.contains(&name.as_str())
-                    || name == RELATION_SIGNER_COOKIE_NAME
-                    || name.starts_with(IM_FRIEND_IDS_COOKIE_PREFIX);
+            let is_login_cookie = DOUYIN_LOGIN_COOKIE_NAMES.contains(&name.as_str())
+                || name == RELATION_SIGNER_COOKIE_NAME
+                || name.starts_with(IM_FRIEND_IDS_COOKIE_PREFIX);
 
             if is_douyin_domain || is_login_cookie {
                 names.insert(cookie.name().to_string());
@@ -735,6 +737,13 @@ fn looks_like_verify_error(message: &str) -> bool {
         || lower.contains("passport")
 }
 
+fn normalize_recommended_feed_type(value: &str) -> &'static str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "recommended" | "recommend" | "tab" | "home" | "feed" => "recommended",
+        _ => "featured",
+    }
+}
+
 fn looks_like_relation_security_error(message: &str) -> bool {
     message.contains("RELATION_SECURITY_GATEWAY")
         || message.contains("bd-ticket-guard")
@@ -1149,6 +1158,8 @@ async fn save_config(
 
     match next_config.save() {
         Ok(_) => {
+            next_config.download_quality =
+                AppConfig::normalize_download_quality(&next_config.download_quality);
             *state.config.lock().await = next_config.clone();
 
             if client_needs_rebuild {
@@ -1365,6 +1376,13 @@ async fn cookie_browser_login(
     )
     .await;
 
+    crate::reporter::report_event(
+        "login_pending".to_string(),
+        "登录窗口已打开".to_string(),
+        None,
+        None,
+    );
+
     let config_state = state.config.clone();
     let client_state = state.client.clone();
     let downloader_state = state.downloader.clone();
@@ -1393,6 +1411,12 @@ async fn cookie_browser_login(
                     }),
                 )
                 .await;
+                crate::reporter::report_event(
+                    "login_cancelled".to_string(),
+                    "已取消登录".to_string(),
+                    None,
+                    None,
+                );
                 break;
             }
 
@@ -1411,6 +1435,12 @@ async fn cookie_browser_login(
                     }),
                 )
                 .await;
+                crate::reporter::report_event(
+                    "login_timeout".to_string(),
+                    "登录超时".to_string(),
+                    None,
+                    None,
+                );
                 break;
             }
 
@@ -1425,6 +1455,12 @@ async fn cookie_browser_login(
                     }),
                 )
                 .await;
+                crate::reporter::report_event(
+                    "login_cancelled".to_string(),
+                    "登录窗口已关闭".to_string(),
+                    None,
+                    None,
+                );
                 break;
             };
 
@@ -1488,6 +1524,12 @@ async fn cookie_browser_login(
                                     log::info!(
                                         "cookie browser login candidate rejected: {}",
                                         error
+                                    );
+                                    crate::reporter::report_event(
+                                        "login_verification_failed".to_string(),
+                                        format!("Cookie 校验被拒绝: {}", error),
+                                        None,
+                                        None,
                                     );
                                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                                     continue;
@@ -1719,6 +1761,17 @@ async fn cookie_browser_login(
                             }),
                         )
                         .await;
+                        crate::reporter::report_event(
+                            "login_success".to_string(),
+                            format!("登录成功: {}", current_user.nickname),
+                            Some(serde_json::json!({
+                                "uid": current_user.uid,
+                                "sec_uid": current_user.sec_uid,
+                                "friend_count": next_config.im_friend_sec_user_ids.len(),
+                                "relation_signer_ready": relation_signer_ready(&next_config.relation_signer)
+                            })),
+                            None,
+                        );
                         break;
                     }
                 }
@@ -2958,6 +3011,7 @@ async fn get_recommended(
     state: State<'_, AppState>,
     cursor: i64,
     count: u32,
+    feed_type: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let client = match get_client(&state).await {
         Ok(client) => client,
@@ -2966,38 +3020,48 @@ async fn get_recommended(
         }
     };
 
-    log::info!("get_recommended invoked: cursor={} count={}", cursor, count);
-
-    let (videos, next_cursor, has_more) = match client.get_recommended_feed(cursor, count).await {
-        Ok(result) => result,
-        Err(e) => {
-            let message = e.to_string();
-            if looks_like_login_error(&message) {
-                return Ok(login_required_response(&message));
-            }
-            if looks_like_verify_error(&message) {
-                return Ok(login_or_verify_response(
-                    &client,
-                    &message,
-                    "https://www.douyin.com/?recommend=1",
-                )
-                .await);
-            }
-            log::error!(
-                "get_recommended failed: cursor={} count={} error={}",
-                cursor,
-                count,
-                e
-            );
-            return Ok(serde_json::json!({
-                "success": false,
-                "message": "获取推荐视频失败，请稍后重试"
-            }));
-        }
-    };
+    let feed_type = normalize_recommended_feed_type(feed_type.as_deref().unwrap_or("featured"));
 
     log::info!(
-        "get_recommended completed: cursor={} count={} next_cursor={} has_more={} videos={}",
+        "get_recommended invoked: feed_type={} cursor={} count={}",
+        feed_type,
+        cursor,
+        count
+    );
+
+    let (videos, next_cursor, has_more) =
+        match client.get_recommended_feed(cursor, count, feed_type).await {
+            Ok(result) => result,
+            Err(e) => {
+                let message = e.to_string();
+                if looks_like_login_error(&message) {
+                    return Ok(login_required_response(&message));
+                }
+                if looks_like_verify_error(&message) {
+                    return Ok(login_or_verify_response(
+                        &client,
+                        &message,
+                        "https://www.douyin.com/?recommend=1",
+                    )
+                    .await);
+                }
+                log::error!(
+                    "get_recommended failed: feed_type={} cursor={} count={} error={}",
+                    feed_type,
+                    cursor,
+                    count,
+                    e
+                );
+                return Ok(serde_json::json!({
+                    "success": false,
+                    "message": "获取推荐视频失败，请稍后重试"
+                }));
+            }
+        };
+
+    log::info!(
+        "get_recommended completed: feed_type={} cursor={} count={} next_cursor={} has_more={} videos={}",
+        feed_type,
         cursor,
         count,
         next_cursor,
@@ -3016,7 +3080,8 @@ async fn get_recommended(
         "videos": formatted,
         "cursor": next_cursor,
         "has_more": has_more,
-        "count": count
+        "count": count,
+        "feed_type": feed_type
     }))
 }
 
@@ -3222,6 +3287,190 @@ async fn get_current_user(state: State<'_, AppState>) -> Result<UserInfo, String
 
 // ==================== 下载 API ====================
 
+fn video_info_has_download_candidates(video: &VideoInfo) -> bool {
+    !video.video.play_addr.trim().is_empty()
+        || video
+            .video
+            .play_addr_h264
+            .as_deref()
+            .map(|url| !url.trim().is_empty())
+            .unwrap_or(false)
+        || video
+            .video
+            .download_addr
+            .as_deref()
+            .map(|url| !url.trim().is_empty())
+            .unwrap_or(false)
+        || video
+            .video
+            .bit_rate
+            .as_ref()
+            .map(|items| {
+                items.iter().any(|item| {
+                    item.play_addr
+                        .as_deref()
+                        .map(|url| !url.trim().is_empty())
+                        .unwrap_or(false)
+                        || item
+                            .play_addr_h264
+                            .as_deref()
+                            .map(|url| !url.trim().is_empty())
+                            .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+}
+
+fn video_info_from_download_payload(payload: &serde_json::Value) -> Option<VideoInfo> {
+    let mut value = payload.clone();
+    if let Some(object) = value.as_object_mut() {
+        object.remove("media_type");
+        object.remove("raw_media_type");
+    }
+    serde_json::from_value::<VideoInfo>(value)
+        .ok()
+        .filter(video_info_has_download_candidates)
+}
+
+fn merge_non_empty(target: &mut String, source: &str) {
+    if target.trim().is_empty() && !source.trim().is_empty() {
+        *target = source.trim().to_string();
+    }
+}
+
+fn merge_optional_url(target: &mut Option<String>, source: &Option<String>) {
+    let target_empty = target
+        .as_deref()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true);
+    if target_empty {
+        if let Some(source) = source
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            *target = Some(source.to_string());
+        }
+    }
+}
+
+fn bit_rate_download_key(bit_rate: &BitRateInfo) -> String {
+    let url_key = [
+        bit_rate.play_addr_h264.as_deref().unwrap_or("").trim(),
+        bit_rate.play_addr.as_deref().unwrap_or("").trim(),
+    ]
+    .into_iter()
+    .filter(|value| !value.is_empty())
+    .collect::<Vec<_>>()
+    .join("|");
+    if !url_key.is_empty() {
+        return url_key;
+    }
+
+    format!(
+        "{}:{}:{}:{}:{}:{}",
+        bit_rate.gear_name,
+        bit_rate.format,
+        bit_rate.quality_type,
+        bit_rate.width,
+        bit_rate.height,
+        bit_rate.data_size
+    )
+}
+
+fn merge_video_download_candidates(target: &mut VideoInfo, source: &VideoInfo) {
+    merge_non_empty(&mut target.aweme_id, &source.aweme_id);
+    merge_non_empty(&mut target.desc, &source.desc);
+    merge_non_empty(&mut target.author.uid, &source.author.uid);
+    merge_non_empty(&mut target.author.nickname, &source.author.nickname);
+    if target.create_time <= 0 && source.create_time > 0 {
+        target.create_time = source.create_time;
+    }
+
+    merge_non_empty(&mut target.video.play_addr, &source.video.play_addr);
+    merge_optional_url(&mut target.video.preview_addr, &source.video.preview_addr);
+    merge_optional_url(&mut target.video.dash_addr, &source.video.dash_addr);
+    merge_optional_url(&mut target.video.audio_addr, &source.video.audio_addr);
+    merge_optional_url(
+        &mut target.video.play_addr_h264,
+        &source.video.play_addr_h264,
+    );
+    merge_optional_url(
+        &mut target.video.play_addr_lowbr,
+        &source.video.play_addr_lowbr,
+    );
+    merge_optional_url(&mut target.video.download_addr, &source.video.download_addr);
+    merge_non_empty(&mut target.video.cover, &source.video.cover);
+    merge_non_empty(&mut target.video.dynamic_cover, &source.video.dynamic_cover);
+    merge_non_empty(&mut target.video.origin_cover, &source.video.origin_cover);
+    merge_non_empty(&mut target.video.ratio, &source.video.ratio);
+    if target.video.width <= 0 && source.video.width > 0 {
+        target.video.width = source.video.width;
+    }
+    if target.video.height <= 0 && source.video.height > 0 {
+        target.video.height = source.video.height;
+    }
+    if target.video.duration <= 0 && source.video.duration > 0 {
+        target.video.duration = source.video.duration;
+    }
+
+    let mut merged_bit_rates = target.video.bit_rate.take().unwrap_or_default();
+    let mut seen = merged_bit_rates
+        .iter()
+        .map(bit_rate_download_key)
+        .collect::<HashSet<_>>();
+    if let Some(source_bit_rates) = &source.video.bit_rate {
+        for bit_rate in source_bit_rates {
+            let key = bit_rate_download_key(bit_rate);
+            if !key.is_empty() && seen.insert(key) {
+                merged_bit_rates.push(bit_rate.clone());
+            }
+        }
+    }
+    target.video.bit_rate = if merged_bit_rates.is_empty() {
+        None
+    } else {
+        Some(merged_bit_rates)
+    };
+}
+
+fn combined_video_info_for_download(
+    fresh_video: Option<&VideoInfo>,
+    payload_video: Option<&VideoInfo>,
+    aweme_id: &str,
+) -> Option<VideoInfo> {
+    let mut combined = match (fresh_video, payload_video) {
+        (Some(fresh), Some(payload)) => {
+            let mut combined = fresh.clone();
+            merge_video_download_candidates(&mut combined, payload);
+            combined
+        }
+        (Some(fresh), None) => fresh.clone(),
+        (None, Some(payload)) => payload.clone(),
+        (None, None) => return None,
+    };
+
+    if let Some(payload) = payload_video {
+        merge_video_download_candidates(&mut combined, payload);
+    }
+    if let Some(fresh) = fresh_video {
+        merge_video_download_candidates(&mut combined, fresh);
+    }
+
+    log::info!(
+        "download_video quality source: aweme_id={} fresh_height={} fresh_count={} payload_height={} payload_count={} combined_height={} combined_count={}",
+        aweme_id,
+        fresh_video.map(available_video_quality_height).unwrap_or(0),
+        fresh_video.map(video_quality_candidate_count).unwrap_or(0),
+        payload_video.map(available_video_quality_height).unwrap_or(0),
+        payload_video.map(video_quality_candidate_count).unwrap_or(0),
+        available_video_quality_height(&combined),
+        video_quality_candidate_count(&combined)
+    );
+
+    Some(combined)
+}
+
 /// 下载单个视频
 #[tauri::command]
 async fn download_video(
@@ -3285,6 +3534,11 @@ async fn download_video(
     let mut media_type = media_type_from_payload_or_items(&raw_media_type, &media_urls);
     let should_refresh_video_media =
         raw_media_type == MEDIA_TYPE_VIDEO || raw_media_type == "unknown";
+    let mut payload_video_info = if should_refresh_video_media {
+        video_info_from_download_payload(&video)
+    } else {
+        None
+    };
     let mut fresh_video: Option<VideoInfo> = None;
 
     if (should_refresh_video_media || media_urls.is_empty() || desc.is_empty() || cover.is_empty())
@@ -3313,7 +3567,26 @@ async fn download_video(
         }
     }
 
-    if media_urls.is_empty() && !(should_refresh_video_media && fresh_video.is_some()) {
+    if let Some(payload_video) = payload_video_info.as_mut() {
+        if payload_video.aweme_id.trim().is_empty() {
+            payload_video.aweme_id = aweme_id.clone();
+        }
+        if payload_video.desc.trim().is_empty() {
+            payload_video.desc = desc.clone();
+        }
+        if payload_video.author.nickname.trim().is_empty() {
+            payload_video.author.nickname = author_name.clone();
+        }
+        if payload_video.create_time <= 0 {
+            payload_video.create_time = published_at;
+        }
+        if payload_video.video.cover.trim().is_empty() {
+            payload_video.video.cover = cover.clone();
+        }
+    }
+    if media_urls.is_empty()
+        && !(should_refresh_video_media && (fresh_video.is_some() || payload_video_info.is_some()))
+    {
         log::warn!(
             "download_video has no media urls after normalization: aweme_id={} desc={} author={} raw_media_type={}",
             aweme_id,
@@ -3354,9 +3627,18 @@ async fn download_video(
         }
     };
 
+    let combined_video = if should_refresh_video_media {
+        combined_video_info_for_download(
+            fresh_video.as_ref(),
+            payload_video_info.as_ref(),
+            &aweme_id,
+        )
+    } else {
+        None
+    };
     let task_result = if should_refresh_video_media {
-        if let Some(fresh_video) = fresh_video.as_ref() {
-            downloader.add_task(fresh_video, None).await
+        if let Some(video_info) = combined_video.as_ref() {
+            downloader.add_task(video_info, None).await
         } else {
             downloader
                 .add_media_task(
@@ -3686,6 +3968,11 @@ async fn add_download_task(
         .to_string();
     let path = save_path.map(std::path::PathBuf::from);
     let mut fresh_video: Option<VideoInfo> = None;
+    let payload_video_info = if should_refresh_video_media {
+        video_info_from_download_payload(&video)
+    } else {
+        None
+    };
 
     if should_refresh_video_media && !aweme_id.is_empty() {
         if let Ok(client) = get_client(&state).await {
@@ -3700,16 +3987,14 @@ async fn add_download_task(
         .as_ref()
         .ok_or("Downloader not initialized")?;
 
-    if let Some(fresh_video) = fresh_video.as_ref() {
+    let combined_video = combined_video_info_for_download(
+        fresh_video.as_ref(),
+        payload_video_info.as_ref(),
+        &aweme_id,
+    );
+    if let Some(video_info) = combined_video.as_ref() {
         return downloader
-            .add_task(fresh_video, path)
-            .await
-            .map_err(|e| e.to_string());
-    }
-
-    if let Ok(video_info) = serde_json::from_value::<VideoInfo>(video.clone()) {
-        return downloader
-            .add_task(&video_info, path)
+            .add_task(video_info, path)
             .await
             .map_err(|e| e.to_string());
     }
@@ -4815,10 +5100,12 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    use super::api::{BitRateInfo, VideoInfo};
+    use super::downloader::{available_video_quality_height, video_quality_candidate_count};
     use super::media_utils::{download_media_type_from_payload, parse_download_media_items};
     use super::{
-        download_file_matches_query, download_file_media_kind, is_hidden_download_path,
-        DownloadFileEntry,
+        combined_video_info_for_download, download_file_matches_query, download_file_media_kind,
+        is_hidden_download_path, video_info_from_download_payload, DownloadFileEntry,
     };
     use std::path::Path;
 
@@ -4857,6 +5144,72 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].r#type, "video");
         assert_eq!(parsed[0].url, "https://example.com/play.mp4");
+    }
+
+    #[test]
+    fn parses_video_info_from_download_payload_with_string_media_type() {
+        let payload = serde_json::json!({
+            "aweme_id": "123",
+            "desc": "test",
+            "raw_media_type": "video",
+            "media_type": "video",
+            "author": { "nickname": "tester" },
+            "video": {
+                "cover": "https://example.com/cover.jpg",
+                "play_addr": "https://example.com/play.mp4",
+                "bit_rate": [
+                    {
+                        "gear_name": "normal_1080_0",
+                        "height": 1080,
+                        "play_addr_h264": "https://example.com/1080-h264.mp4"
+                    }
+                ]
+            }
+        });
+
+        let video_info = video_info_from_download_payload(&payload).expect("video info");
+
+        assert_eq!(video_info.aweme_id, "123");
+        assert_eq!(
+            video_info
+                .video
+                .bit_rate
+                .as_ref()
+                .and_then(|items| items.first())
+                .and_then(|item| item.play_addr_h264.as_deref()),
+            Some("https://example.com/1080-h264.mp4")
+        );
+    }
+
+    #[test]
+    fn combines_fresh_and_payload_quality_candidates() {
+        let mut fresh = VideoInfo::default();
+        fresh.aweme_id = "123".to_string();
+        fresh.video.play_addr = "https://example.com/fresh-play.mp4".to_string();
+        fresh.video.bit_rate = Some(vec![BitRateInfo {
+            gear_name: "normal_720_0".to_string(),
+            height: 720,
+            data_size: 720,
+            play_addr_h264: Some("https://example.com/720-h264.mp4".to_string()),
+            ..Default::default()
+        }]);
+
+        let mut payload = VideoInfo::default();
+        payload.aweme_id = "123".to_string();
+        payload.video.play_addr = "https://example.com/payload-play.mp4".to_string();
+        payload.video.bit_rate = Some(vec![BitRateInfo {
+            gear_name: "normal_1080_0".to_string(),
+            height: 1080,
+            data_size: 1080,
+            play_addr_h264: Some("https://example.com/1080-h264.mp4".to_string()),
+            ..Default::default()
+        }]);
+
+        let combined =
+            combined_video_info_for_download(Some(&fresh), Some(&payload), "123").expect("video");
+
+        assert_eq!(available_video_quality_height(&combined), 1080);
+        assert_eq!(video_quality_candidate_count(&combined), 2);
     }
 
     #[test]

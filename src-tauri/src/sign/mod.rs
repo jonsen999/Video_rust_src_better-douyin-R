@@ -254,7 +254,8 @@ pub fn custom_base64_encode(data: &[u8]) -> String {
 // ============================================================================
 
 const WINDOW_ENV_STR: &str = "1536|747|1536|834|0|30|0|0|1536|834|1536|864|1525|747|24|24|Win32";
-const SPIDER_WINDOW_ENV_STR: &str = "1707|809|1707|912|0|0|0|0|1707|912|1707|960|1697|809|24|24|Win32";
+const SPIDER_WINDOW_ENV_STR: &str =
+    "1707|809|1707|912|0|0|0|0|1707|912|1707|960|1697|809|24|24|Win32";
 
 /// 生成随机字节
 fn mix_random_byte(value: u32, value_mask: u32, salt: u32, salt_mask: u32) -> u8 {
@@ -547,10 +548,10 @@ fn generate_spider_rc4_bb(params: &str, body: &str) -> Vec<u8> {
 
     let mut bb = Vec::with_capacity(45 + window_env_bytes.len());
     bb.extend_from_slice(&[
-        b[18], b[20], b[52], b[26], b[30], b[34], b[58], b[38], b[40], b[53], b[42],
-        b[21], b[27], b[54], b[55], b[31], b[35], b[57], b[39], b[41], b[43], b[22],
-        b[28], b[32], b[60], b[36], b[23], b[29], b[33], b[37], b[44], b[45], b[59],
-        b[46], b[47], b[48], b[49], b[50], b[24], b[25], b[65], b[66], b[70], b[71],
+        b[18], b[20], b[52], b[26], b[30], b[34], b[58], b[38], b[40], b[53], b[42], b[21], b[27],
+        b[54], b[55], b[31], b[35], b[57], b[39], b[41], b[43], b[22], b[28], b[32], b[60], b[36],
+        b[23], b[29], b[33], b[37], b[44], b[45], b[59], b[46], b[47], b[48], b[49], b[50], b[24],
+        b[25], b[65], b[66], b[70], b[71],
     ]);
     bb.extend_from_slice(window_env_bytes);
     bb.push(b[72]);
@@ -628,8 +629,7 @@ mod tests {
                         .expect("custom base64 byte") as u32
                 };
             }
-            let packed =
-                (numbers[0] << 18) | (numbers[1] << 12) | (numbers[2] << 6) | numbers[3];
+            let packed = (numbers[0] << 18) | (numbers[1] << 12) | (numbers[2] << 6) | numbers[3];
             output.push(((packed >> 16) & 0xff) as u8);
             if padding < 2 {
                 output.push(((packed >> 8) & 0xff) as u8);

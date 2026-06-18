@@ -102,7 +102,7 @@ douyin-dl config set download_quality highest
 douyin-dl config set filename_template "{author}_{title}"
 ```
 
-Supported config keys: `cookie`, `download_path`, `proxy`, `max_concurrent`, `download_quality` (auto/highest/h264/smallest), `filename_template`, `folder_name_template`, `auto_create_folder`, `save_metadata`, `theme`, `language`.
+Supported config keys: `cookie`, `download_path`, `proxy`, `max_concurrent`, `download_quality` (auto/highest/h264/smallest/480p/720p/1080p/2k/4k), `filename_template`, `folder_name_template`, `auto_create_folder`, `save_metadata`, `theme`, `language`.
 
 The config file is at `~/Library/Application Support/better-douyin-R/config.json` (macOS) or equivalent platform dir. It is shared with the Tauri desktop app.
 

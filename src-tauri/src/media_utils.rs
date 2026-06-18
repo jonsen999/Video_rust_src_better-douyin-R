@@ -94,18 +94,6 @@ pub fn python_media_urls(video: &VideoInfo) -> Vec<serde_json::Value> {
     if items.is_empty() {
         if let Some(url) = no_watermark_video_url(video) {
             items.push(serde_json::json!({ "type": MEDIA_TYPE_VIDEO, "url": url }));
-        } else if let Some(dash_addr) = video
-            .video
-            .dash_addr
-            .as_ref()
-            .map(|url| url.trim())
-            .filter(|url| !url.is_empty())
-        {
-            items.push(serde_json::json!({
-                "type": MEDIA_TYPE_VIDEO,
-                "url": dash_addr,
-                "format": "dash",
-            }));
         }
     }
 
@@ -569,7 +557,7 @@ fn push_download_item(
     }
     if media_type == MEDIA_TYPE_VIDEO {
         url = clean_video_download_url(original_url);
-        if url.is_empty() || is_watermark_video_url(&url) {
+        if url.is_empty() || is_watermark_video_url(&url) || is_dash_video_only_url(&url) {
             return;
         }
     }
@@ -599,6 +587,11 @@ fn is_watermark_video_url(url: &str) -> bool {
         || normalized.contains("/aweme/v1/playwm")
 }
 
+pub fn is_dash_video_only_url(url: &str) -> bool {
+    let normalized = url.trim().to_ascii_lowercase();
+    normalized.contains("media-video") || normalized.contains("media_video")
+}
+
 fn no_watermark_video_url(video: &VideoInfo) -> Option<String> {
     for url in [
         video.video.play_addr_h264.as_deref(),
@@ -610,7 +603,10 @@ fn no_watermark_video_url(video: &VideoInfo) -> Option<String> {
     .flatten()
     {
         let clean_url = clean_video_download_url(url);
-        if !clean_url.is_empty() && !is_watermark_video_url(&clean_url) {
+        if !clean_url.is_empty()
+            && !is_watermark_video_url(&clean_url)
+            && !is_dash_video_only_url(&clean_url)
+        {
             return Some(clean_url);
         }
     }
@@ -785,6 +781,29 @@ mod tests {
             "https://example.com/aweme/v1/play/?watermark=0"
         );
         assert_eq!(parsed[1].url, "https://example.com/clean.mp4");
+    }
+
+    #[test]
+    fn parse_download_items_skips_dash_video_only_urls() {
+        let payload = serde_json::json!({
+            "media_urls": [
+                { "type": "video", "url": "https://example.com/media-video-avc1" },
+                { "type": "video", "url": "https://example.com/progressive.mp4" }
+            ]
+        });
+
+        let parsed = parse_download_media_items(&payload, MEDIA_TYPE_VIDEO);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].url, "https://example.com/progressive.mp4");
+    }
+
+    #[test]
+    fn python_media_urls_do_not_fallback_to_dash_video_only() {
+        let mut video = sample_video_with_images(vec![], vec![]);
+        video.video.play_addr.clear();
+        video.video.dash_addr = Some("https://example.com/media-video-avc1".into());
+
+        assert!(python_media_urls(&video).is_empty());
     }
 
     #[test]

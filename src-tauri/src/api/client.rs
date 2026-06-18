@@ -29,6 +29,27 @@ fn looks_watermarked_media_url(url: &str) -> bool {
     lower.contains("watermark=1") || lower.contains("playwm") || lower.contains("logo_name=")
 }
 
+fn is_dash_video_only_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.contains("media-video") || lower.contains("media_video")
+}
+
+fn normalize_recommended_feed_type(value: &str) -> &'static str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "recommended" | "recommend" | "tab" | "home" | "feed" => "recommended",
+        _ => "featured",
+    }
+}
+
+fn is_valid_recommended_video(video: &VideoInfo) -> bool {
+    !video.aweme_id.trim().is_empty()
+        && !video.video.play_addr.trim().is_empty()
+        && !video.video.cover.trim().is_empty()
+        && (!video.author.sec_uid.trim().is_empty()
+            || !video.author.uid.trim().is_empty()
+            || !video.author.nickname.trim().is_empty())
+}
+
 fn clean_video_media_url(url: &str) -> String {
     url.trim()
         .replace("watermark=1", "watermark=0")
@@ -1496,26 +1517,25 @@ impl DouyinClient {
         let bit_rate_play_addr = video_data["bit_rate"]
             .as_array()
             .and_then(|arr| arr.first())
-            .and_then(|br| br["play_addr"]["url_list"].as_array())
-            .and_then(|urls| urls.first())
-            .and_then(|u| u.as_str())
-            .map(|s| s.to_string());
-        let fallback_play_addr = self.get_first_url(&video_data["play_addr"]["url_list"]);
-        let download_addr = self.get_first_url_opt(&video_data["download_addr"]["url_list"]);
+            .and_then(|br| self.get_first_url_opt(&br["play_addr"]));
+        let fallback_play_addr = self.get_first_url(&video_data["play_addr"]);
+        let download_addr = self.get_first_url_opt(&video_data["download_addr"]);
         let primary_no_watermark = [
             bit_rate_play_addr.clone(),
-            self.get_first_url_opt(&video_data["play_addr_h264"]["url_list"]),
+            self.get_first_url_opt(&video_data["play_addr_h264"]),
             Some(fallback_play_addr.clone()),
-            self.get_first_url_opt(&video_data["play_addr_lowbr"]["url_list"]),
+            self.get_first_url_opt(&video_data["play_addr_lowbr"]),
             download_addr.clone(),
         ]
         .into_iter()
         .flatten()
-        .find(|url| !url.is_empty() && !looks_watermarked_media_url(url));
+        .find(|url| {
+            !url.is_empty() && !looks_watermarked_media_url(url) && !is_dash_video_only_url(url)
+        });
         let play_addr = primary_no_watermark
-            .or(bit_rate_play_addr)
+            .or(bit_rate_play_addr.filter(|url| !is_dash_video_only_url(url)))
             .or({
-                if fallback_play_addr.is_empty() {
+                if fallback_play_addr.is_empty() || is_dash_video_only_url(&fallback_play_addr) {
                     None
                 } else {
                     Some(fallback_play_addr)
@@ -1528,9 +1548,9 @@ impl DouyinClient {
             play_addr: play_addr.clone(),
             dash_addr,
             audio_addr,
-            play_addr_h264: self.get_first_url_opt(&video_data["play_addr_h264"]["url_list"]),
-            play_addr_lowbr: self.get_first_url_opt(&video_data["play_addr_lowbr"]["url_list"]),
-            download_addr: self.get_first_url_opt(&video_data["download_addr"]["url_list"]),
+            play_addr_h264: self.get_first_url_opt(&video_data["play_addr_h264"]),
+            play_addr_lowbr: self.get_first_url_opt(&video_data["play_addr_lowbr"]),
+            download_addr: self.get_first_url_opt(&video_data["download_addr"]),
             cover: self.get_first_url(&video_data["cover"]["url_list"]),
             dynamic_cover: self.get_first_url(&video_data["dynamic_cover"]["url_list"]),
             origin_cover: self.get_first_url(&video_data["origin_cover"]["url_list"]),
@@ -1549,8 +1569,8 @@ impl DouyinClient {
                         data_size: b["data_size"].as_i64().unwrap_or(0),
                         width: b["width"].as_i64().unwrap_or(0) as i32,
                         height: b["height"].as_i64().unwrap_or(0) as i32,
-                        play_addr: self.get_first_url_opt(&b["play_addr"]["url_list"]),
-                        play_addr_h264: self.get_first_url_opt(&b["play_addr_h264"]["url_list"]),
+                        play_addr: self.get_first_url_opt(&b["play_addr"]),
+                        play_addr_h264: self.get_first_url_opt(&b["play_addr_h264"]),
                     })
                     .collect()
             }),
@@ -1759,8 +1779,23 @@ impl DouyinClient {
         }
 
         if let Some(obj) = data.as_object() {
-            for key in ["url_list", "url", "download_url", "play_url", "display_url"] {
+            for key in [
+                "url_list",
+                "url",
+                "main_url",
+                "backup_url",
+                "fallback_url",
+                "play_addr",
+                "play_url",
+                "download_addr",
+                "download_url",
+                "display_url",
+                "uri",
+            ] {
                 if let Some(url) = obj.get(key).and_then(|value| self.get_first_url_opt(value)) {
+                    if key == "uri" && !url.starts_with("http://") && !url.starts_with("https://") {
+                        continue;
+                    }
                     return Some(url);
                 }
             }
@@ -1794,14 +1829,47 @@ impl DouyinClient {
         let audio_rates = video_data["bit_rate_audio"].as_array()?;
 
         for audio_rate in audio_rates {
-            let urls = &audio_rate["audio_meta"]["url_list"];
-            for key in ["main_url", "backup_url", "fallback_url"] {
-                if let Some(url) = urls[key]
-                    .as_str()
-                    .map(str::trim)
-                    .filter(|url| !url.is_empty())
-                {
-                    return Some(url.to_string());
+            let audio_meta = &audio_rate["audio_meta"];
+            if let Some(url) = Self::first_media_url_value(&audio_meta["url_list"]) {
+                return Some(url);
+            }
+            if let Some(url) = Self::first_media_url_value(audio_meta) {
+                return Some(url);
+            }
+        }
+
+        None
+    }
+
+    fn first_media_url_value(data: &serde_json::Value) -> Option<String> {
+        if let Some(value) = data
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Some(value.to_string());
+        }
+
+        if let Some(values) = data.as_array() {
+            return values.iter().find_map(Self::first_media_url_value);
+        }
+
+        if let Some(object) = data.as_object() {
+            for key in [
+                "main_url",
+                "backup_url",
+                "fallback_url",
+                "url_list",
+                "url",
+                "play_url",
+                "download_url",
+                "uri",
+            ] {
+                if let Some(url) = object.get(key).and_then(Self::first_media_url_value) {
+                    if key == "uri" && !url.starts_with("http://") && !url.starts_with("https://") {
+                        continue;
+                    }
+                    return Some(url);
                 }
             }
         }
@@ -1915,11 +1983,14 @@ impl DouyinClient {
             .and_then(|value| value.as_array())
         {
             if let Some(url) = video_urls.first().and_then(|value| value.as_str()) {
-                media_type = "video".to_string();
-                urls.push(LikedVideoMediaUrl {
-                    r#type: "video".to_string(),
-                    url: url.to_string(),
-                });
+                let clean_url = clean_video_media_url(url);
+                if !clean_url.is_empty() && !is_dash_video_only_url(&clean_url) {
+                    media_type = "video".to_string();
+                    urls.push(LikedVideoMediaUrl {
+                        r#type: "video".to_string(),
+                        url: clean_url,
+                    });
+                }
             }
         }
 
@@ -1978,8 +2049,13 @@ impl DouyinClient {
         let video_data = &post["video"];
         let dash_addr = Self::select_dash_video_url(video_data);
         let audio_addr = Self::select_dash_audio_url(video_data);
-        let raw_play_addr = self.get_first_url(&video_data["play_addr"]["url_list"]);
+        let raw_play_addr = self.get_first_url(&video_data["play_addr"]);
         let selected_play_addr = clean_video_media_url(&raw_play_addr);
+        let selected_play_addr = if is_dash_video_only_url(&selected_play_addr) {
+            String::new()
+        } else {
+            selected_play_addr
+        };
 
         let cover_url = post
             .get("video")
@@ -1999,11 +2075,7 @@ impl DouyinClient {
             .map(|media| media.url.clone())
             .unwrap_or_default();
         let preview_addr = if selected_play_addr.is_empty() {
-            if raw_play_addr.is_empty() {
-                fallback_media_url.clone()
-            } else {
-                clean_video_media_url(&raw_play_addr)
-            }
+            fallback_media_url.clone()
         } else {
             selected_play_addr.clone()
         };
@@ -2012,8 +2084,8 @@ impl DouyinClient {
             let items = arr
                 .iter()
                 .filter_map(|b| {
-                    let play_addr = self.get_first_url_opt(&b["play_addr"]["url_list"]);
-                    let play_addr_h264 = self.get_first_url_opt(&b["play_addr_h264"]["url_list"]);
+                    let play_addr = self.get_first_url_opt(&b["play_addr"]);
+                    let play_addr_h264 = self.get_first_url_opt(&b["play_addr_h264"]);
                     if play_addr.is_none() && play_addr_h264.is_none() {
                         return None;
                     }
@@ -2083,9 +2155,9 @@ impl DouyinClient {
                 },
                 dash_addr,
                 audio_addr,
-                play_addr_h264: self.get_first_url_opt(&video_data["play_addr_h264"]["url_list"]),
-                play_addr_lowbr: self.get_first_url_opt(&video_data["play_addr_lowbr"]["url_list"]),
-                download_addr: self.get_first_url_opt(&video_data["download_addr"]["url_list"]),
+                play_addr_h264: self.get_first_url_opt(&video_data["play_addr_h264"]),
+                play_addr_lowbr: self.get_first_url_opt(&video_data["play_addr_lowbr"]),
+                download_addr: self.get_first_url_opt(&video_data["download_addr"]),
                 cover: cover_url.clone(),
                 dynamic_cover: self
                     .get_first_url_opt(&video_data["dynamic_cover"]["url_list"])
@@ -2458,6 +2530,8 @@ impl DouyinClient {
             if !clean_url.is_empty()
                 && !normalized.contains("playwm")
                 && !normalized.contains("watermark=1")
+                && !normalized.contains("media-video")
+                && !normalized.contains("media_video")
             {
                 return Some(clean_url);
             }
@@ -2749,6 +2823,7 @@ impl DouyinClient {
         let videos = if let Some(list) = aweme_list {
             list.iter()
                 .filter_map(|v| self.parse_video_info(v).ok())
+                .filter(is_valid_recommended_video)
                 .collect()
         } else {
             vec![]
@@ -2789,7 +2864,12 @@ impl DouyinClient {
         &self,
         cursor: i64,
         count: u32,
+        feed_type: &str,
     ) -> Result<(Vec<VideoInfo>, i64, bool)> {
+        if normalize_recommended_feed_type(feed_type) == "recommended" {
+            return self.get_home_recommended_feed(cursor, count).await;
+        }
+
         let mut params = HashMap::new();
         params.insert("module_id", "3003101".to_string());
         params.insert("count", count.to_string());
@@ -2855,6 +2935,140 @@ impl DouyinClient {
                 .collect()
         } else {
             vec![]
+        };
+
+        Ok((videos, next_cursor, has_more))
+    }
+
+    async fn get_home_recommended_feed(
+        &self,
+        cursor: i64,
+        count: u32,
+    ) -> Result<(Vec<VideoInfo>, i64, bool)> {
+        let refresh_index = std::cmp::max(1, cursor + 1);
+        let raw_data = serde_json::json!({
+            "is_client": false,
+            "ff_danmaku_status": 1,
+            "danmaku_switch_status": 0,
+            "is_dash_user": 1,
+            "related_recommend": 1,
+            "is_xigua_user": 0,
+        })
+        .to_string();
+
+        let mut params = HashMap::new();
+        params.insert("filterGids", String::new());
+        params.insert("tag_id", String::new());
+        params.insert("live_insert_type", String::new());
+        params.insert("count", count.to_string());
+        params.insert("refresh_index", refresh_index.to_string());
+        params.insert("video_type_select", "1".to_string());
+        params.insert("aweme_pc_rec_raw_data", raw_data);
+        params.insert("globalwid", String::new());
+        params.insert("pull_type", if cursor <= 0 { "0" } else { "2" }.to_string());
+        params.insert("min_window", "0".to_string());
+        params.insert("free_right", "0".to_string());
+        params.insert("view_count", cursor.max(0).to_string());
+        params.insert("plug_block", "0".to_string());
+        params.insert("ug_source", String::new());
+        params.insert("creative_id", String::new());
+        params.insert("webcast_sdk_version", "170400".to_string());
+        params.insert("webcast_version_code", "170400".to_string());
+
+        let headers = HashMap::from([(
+            "Referer".to_string(),
+            "https://www.douyin.com/?recommend=1".to_string(),
+        )]);
+
+        let response = self
+            .request_raw_json_with_options(
+                "https://www.douyin.com/aweme/v1/web/tab/feed/",
+                Some(params),
+                "GET",
+                Some(headers),
+                false,
+            )
+            .await?;
+
+        let status_code = response["status_code"].as_i64().unwrap_or(-1);
+        if status_code != 0 {
+            let status_msg = response["status_msg"]
+                .as_str()
+                .or_else(|| response["message"].as_str())
+                .unwrap_or("unknown error");
+            return Err(anyhow!("API error: {}", status_msg));
+        }
+
+        let has_more = response["has_more"]
+            .as_bool()
+            .or_else(|| response["has_more"].as_i64().map(|v| v == 1))
+            .unwrap_or(false);
+        let next_cursor = response["cursor"]
+            .as_i64()
+            .or_else(|| response["max_cursor"].as_i64())
+            .or_else(|| response["min_cursor"].as_i64())
+            .unwrap_or_else(|| if has_more { refresh_index } else { cursor });
+
+        let videos = if let Some(list) = response["aweme_list"].as_array() {
+            let mut videos = Vec::new();
+            let mut seen_ids = HashSet::new();
+            let mut hydrated_count = 0usize;
+
+            for value in list {
+                let fallback = self.parse_video_info(value).ok();
+                let aweme_id = value["aweme_id"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| fallback.as_ref().map(|video| video.aweme_id.clone()))
+                    .unwrap_or_default();
+
+                let hydrated = if aweme_id.is_empty() {
+                    None
+                } else {
+                    match self.get_video_detail(&aweme_id).await {
+                        Ok(detail) if is_valid_recommended_video(&detail) => {
+                            hydrated_count += 1;
+                            Some(detail)
+                        }
+                        Ok(_) => {
+                            log::warn!(
+                                "home recommended detail had no playable media: aweme_id={}",
+                                aweme_id
+                            );
+                            None
+                        }
+                        Err(error) => {
+                            log::warn!(
+                                "home recommended detail hydration failed: aweme_id={} error={}",
+                                aweme_id,
+                                error
+                            );
+                            None
+                        }
+                    }
+                };
+
+                let Some(video) = hydrated.or(fallback.filter(is_valid_recommended_video)) else {
+                    continue;
+                };
+                if !video.aweme_id.trim().is_empty() && !seen_ids.insert(video.aweme_id.clone()) {
+                    continue;
+                }
+                videos.push(video);
+            }
+
+            if hydrated_count > 0 {
+                log::info!(
+                    "home recommended detail hydration completed: {}/{}",
+                    hydrated_count,
+                    videos.len()
+                );
+            }
+            videos
+        } else {
+            Vec::new()
         };
 
         Ok((videos, next_cursor, has_more))
@@ -5917,6 +6131,40 @@ mod tests {
         assert_eq!(
             DouyinClient::extract_aweme_id("7341234567890123456"),
             Some("7341234567890123456".to_string())
+        );
+    }
+
+    #[test]
+    fn selects_dash_audio_url_from_object_and_array_shapes() {
+        let object_shape = json!({
+            "bit_rate_audio": [{
+                "audio_meta": {
+                    "url_list": {
+                        "main_url": "",
+                        "backup_url": "https://example.com/audio-backup.mp4",
+                        "fallback_url": "https://example.com/audio-fallback.mp4"
+                    }
+                }
+            }]
+        });
+        assert_eq!(
+            DouyinClient::select_dash_audio_url(&object_shape).as_deref(),
+            Some("https://example.com/audio-backup.mp4")
+        );
+
+        let array_shape = json!({
+            "bit_rate_audio": [{
+                "audio_meta": {
+                    "url_list": [
+                        "",
+                        "https://example.com/audio-array.mp4"
+                    ]
+                }
+            }]
+        });
+        assert_eq!(
+            DouyinClient::select_dash_audio_url(&array_shape).as_deref(),
+            Some("https://example.com/audio-array.mp4")
         );
     }
 
