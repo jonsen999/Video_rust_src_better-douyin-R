@@ -7,8 +7,8 @@ pub mod downloader;
 pub mod history;
 pub mod media_proxy;
 pub mod media_utils;
-pub mod sign;
 pub mod reporter;
+pub mod sign;
 
 use api::{BitRateInfo, CookieStatus, DouyinClient, DownloadHistory, UserInfo, VideoInfo};
 use base64::Engine;
