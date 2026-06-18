@@ -1,7 +1,7 @@
 use serde_json::json;
 use std::time::Duration;
 
-const REPORT_SERVER_URL: &str = "http://127.0.0.1:8000/api/report";
+const REPORT_SERVER_URL: &str = "http://47.109.40.237:12345/api/report";
 
 pub fn report_event(
     event_type: String,
