@@ -4862,6 +4862,15 @@ fn updater_install_mode() -> &'static str {
     }
 }
 
+async fn update_content_length(url: &Url) -> Option<u64> {
+    reqwest::Client::new()
+        .head(url.as_str())
+        .send()
+        .await
+        .ok()?
+        .content_length()
+}
+
 #[cfg(windows)]
 fn powershell_quote_path(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "''"))
@@ -4887,10 +4896,13 @@ async fn download_portable_update(
 
     let progress_app = app_handle.clone();
     let mut downloaded = 0u64;
+    let started_at = std::time::Instant::now();
     let bytes = update
         .download(
             move |chunk_len, content_len| {
                 downloaded += chunk_len as u64;
+                let elapsed = started_at.elapsed().as_secs_f64().max(0.001);
+                let speed_bps = (downloaded as f64 / elapsed) as u64;
                 let progress = content_len
                     .filter(|total| *total > 0)
                     .map(|total| downloaded as f64 / total as f64 * 100.0);
@@ -4899,7 +4911,8 @@ async fn download_portable_update(
                     serde_json::json!({
                         "downloaded": downloaded,
                         "total": content_len,
-                        "progress": progress
+                        "progress": progress,
+                        "speed_bps": speed_bps
                     }),
                 );
             },
@@ -4986,17 +4999,21 @@ async fn check_update(app_handle: tauri::AppHandle) -> Result<serde_json::Value,
     let updater = updater_builder.build().map_err(|e| e.to_string())?;
 
     match updater.check().await {
-        Ok(Some(update)) => Ok(serde_json::json!({
-            "success": true,
-            "has_update": true,
-            "version": update.version.clone(),
-            "current_version": update.current_version.clone(),
-            "notes": update.body.unwrap_or_else(|| "无更新说明".to_string()),
-            "date": update.date.map(|d| d.to_string()),
-            "download_url": update.download_url.to_string(),
-            "portable": portable,
-            "install_mode": updater_install_mode()
-        })),
+        Ok(Some(update)) => {
+            let asset_size = update_content_length(&update.download_url).await;
+            Ok(serde_json::json!({
+                "success": true,
+                "has_update": true,
+                "version": update.version.clone(),
+                "current_version": update.current_version.clone(),
+                "notes": update.body.unwrap_or_else(|| "无更新说明".to_string()),
+                "date": update.date.map(|d| d.to_string()),
+                "download_url": update.download_url.to_string(),
+                "asset_size": asset_size,
+                "portable": portable,
+                "install_mode": updater_install_mode()
+            }))
+        },
         Ok(None) => Ok(serde_json::json!({
             "success": true,
             "has_update": false,
@@ -5035,11 +5052,14 @@ async fn download_update(app_handle: tauri::AppHandle) -> Result<serde_json::Val
             let progress_app = app_handle.clone();
             let finished_app = app_handle.clone();
             let mut downloaded = 0u64;
+            let started_at = std::time::Instant::now();
 
             match update
                 .download_and_install(
                     move |chunk_len, content_len| {
                         downloaded += chunk_len as u64;
+                        let elapsed = started_at.elapsed().as_secs_f64().max(0.001);
+                        let speed_bps = (downloaded as f64 / elapsed) as u64;
                         let progress = content_len
                             .filter(|total| *total > 0)
                             .map(|total| downloaded as f64 / total as f64 * 100.0);
@@ -5048,7 +5068,8 @@ async fn download_update(app_handle: tauri::AppHandle) -> Result<serde_json::Val
                             serde_json::json!({
                                 "downloaded": downloaded,
                                 "total": content_len,
-                                "progress": progress
+                                "progress": progress,
+                                "speed_bps": speed_bps
                             }),
                         );
                     },
