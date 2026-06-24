@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import fs from 'node:fs';
+
 const version = process.env.VERSION || process.argv[2] || '';
 const repository = process.env.GITHUB_REPOSITORY || process.argv[3] || '';
 const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '';
@@ -78,6 +80,11 @@ for (const [from, to] of renameMap) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: to }),
   });
+
+  if (fs.existsSync(from) && !fs.existsSync(to)) {
+    fs.renameSync(from, to);
+    console.log(`Renamed local ${from} -> ${to}`);
+  }
 
   byName.delete(from);
   byName.set(to, { ...source, name: to });
