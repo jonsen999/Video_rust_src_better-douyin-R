@@ -39,6 +39,7 @@ import type {
   VideoInfo,
   VideoMediaUrl,
   VideoRelationResponse,
+  FollowResponse,
 } from "./contracts";
 
 export type * from "./contracts";
@@ -955,6 +956,16 @@ export async function setVideoCollected(awemeId: string, collected: boolean): Pr
     });
   }
   return invoke("set_video_collected", { awemeId, aweme_id: awemeId, collected });
+}
+
+export async function setUserFollowed(userId: string, follow: boolean): Promise<FollowResponse> {
+  if (shouldUseBrowserBridge()) {
+    return requestJson("/api/user_follow", {
+      method: "POST",
+      body: JSON.stringify({ user_id: userId, follow }),
+    });
+  }
+  return invoke("set_user_followed", { userId, user_id: userId, follow });
 }
 
 export async function downloadVideo(video: VideoInfo): Promise<ApiResponse & { task_id?: string }> {

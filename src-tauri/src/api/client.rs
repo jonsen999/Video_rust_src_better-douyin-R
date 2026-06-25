@@ -3820,6 +3820,19 @@ impl DouyinClient {
         .await
     }
 
+    pub async fn set_user_followed(&self, user_id: &str, follow: bool) -> Result<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("user_id", user_id.trim().to_string());
+        params.insert("type", if follow { "1" } else { "0" }.to_string());
+
+        self.request_relation_update(
+            "https://www-hj.douyin.com/aweme/v1/web/commit/follow/user/",
+            params,
+            "关注",
+        )
+        .await
+    }
+
     fn im_common_headers(&self, path: &str) -> HashMap<String, String> {
         let mut headers = crate::config::get_common_headers(&self.config.cookie);
         headers.extend(Self::ticket_guard_headers_from_cookie(&self.config.cookie));
@@ -5626,8 +5639,12 @@ impl DouyinClient {
             .get("aweme_id")
             .map(|value| value.trim().is_empty())
             .unwrap_or(true)
+            && body_params
+                .get("user_id")
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true)
         {
-            return Err(anyhow!("作品ID不能为空"));
+            return Err(anyhow!("目标ID不能为空"));
         }
 
         let mut query_params = crate::config::get_common_params();

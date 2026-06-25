@@ -2057,6 +2057,48 @@ async fn set_video_collected(
     }
 }
 
+#[tauri::command]
+async fn set_user_followed(
+    state: State<'_, AppState>,
+    user_id: String,
+    follow: bool,
+) -> Result<serde_json::Value, String> {
+    let user_id = user_id.trim().to_string();
+    if user_id.is_empty() {
+        return Ok(serde_json::json!({
+            "success": false,
+            "message": "用户ID不能为空"
+        }));
+    }
+
+    let client = match get_client(&state).await {
+        Ok(client) => client,
+        Err(_) => {
+            return Ok(cookie_required_response());
+        }
+    };
+
+    match client.set_user_followed(&user_id, follow).await {
+        Ok(_) => Ok(serde_json::json!({
+            "success": true,
+            "user_id": user_id,
+            "is_follow": follow,
+            "message": if follow { "关注成功" } else { "已取消关注" }
+        })),
+        Err(e) => Ok(api_login_or_verify_error_response(
+            &client,
+            if follow {
+                "关注失败"
+            } else {
+                "取消关注失败"
+            },
+            e,
+            "https://www.douyin.com/",
+        )
+        .await),
+    }
+}
+
 /// 获取视频详情
 #[tauri::command]
 async fn get_video_detail(
@@ -5185,6 +5227,7 @@ pub fn run() {
             parse_link,
             set_video_liked,
             set_video_collected,
+            set_user_followed,
             get_video_detail,
             search_user,
             get_user_detail,
