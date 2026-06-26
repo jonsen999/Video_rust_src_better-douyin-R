@@ -1246,17 +1246,23 @@ export function FullscreenPlayer({
   const updateCommentById = useCallback((commentId: string, updater: (comment: CommentInfo) => CommentInfo) => {
     setComments((prev) => prev.map((comment) => (comment.cid === commentId ? updater(comment) : comment)));
     setCommentReplies((prev) => {
-      let changed = false;
       const next: CommentRepliesState = {};
+      let anyChanged = false;
       for (const [cid, state] of Object.entries(prev)) {
+        let itemsChanged = false;
         const nextItems = state.items.map((reply) => {
           if (reply.cid !== commentId) return reply;
-          changed = true;
+          itemsChanged = true;
           return updater(reply);
         });
-        next[cid] = nextItems === state.items ? state : { ...state, items: nextItems };
+        if (itemsChanged) {
+          anyChanged = true;
+          next[cid] = { ...state, items: nextItems };
+        } else {
+          next[cid] = state;
+        }
       }
-      return changed ? next : prev;
+      return anyChanged ? next : prev;
     });
   }, []);
 
