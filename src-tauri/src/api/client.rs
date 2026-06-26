@@ -3017,28 +3017,37 @@ impl DouyinClient {
             .unwrap_or_else(|| if has_more { refresh_index } else { cursor });
 
         let videos = if let Some(list) = response["aweme_list"].as_array() {
-            let mut videos = Vec::new();
-            let mut seen_ids = HashSet::new();
-            let mut hydrated_count = 0usize;
+            // 预解析 fallback 与 aweme_id，避免在并发任务里持有 list 借用。
+            // tab/feed 返回的视频字段不完整（缺少可播放地址），需要逐个请求 detail 刷新。
+            // 用 buffered(4) 并发请求，保持原列表顺序，与 Python 版行为一致。
+            let prepared: Vec<(String, Option<VideoInfo>)> = list
+                .iter()
+                .map(|value| {
+                    let fallback = self.parse_video_info(value).ok();
+                    let aweme_id = value["aweme_id"]
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                        .map(str::to_string)
+                        .or_else(|| fallback.as_ref().map(|video| video.aweme_id.clone()))
+                        .unwrap_or_default();
+                    (aweme_id, fallback)
+                })
+                .collect();
 
-            for value in list {
-                let fallback = self.parse_video_info(value).ok();
-                let aweme_id = value["aweme_id"]
-                    .as_str()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string)
-                    .or_else(|| fallback.as_ref().map(|video| video.aweme_id.clone()))
-                    .unwrap_or_default();
-
-                let hydrated = if aweme_id.is_empty() {
-                    None
-                } else {
+            use futures::stream::{self, StreamExt};
+            const HYDRATE_CONCURRENCY: usize = 4;
+            let aweme_ids: Vec<String> = prepared
+                .iter()
+                .map(|(aweme_id, _)| aweme_id.clone())
+                .collect();
+            let hydrated: Vec<Option<VideoInfo>> = stream::iter(aweme_ids)
+                .map(|aweme_id| async move {
+                    if aweme_id.is_empty() {
+                        return None;
+                    }
                     match self.get_video_detail(&aweme_id).await {
-                        Ok(detail) if is_valid_recommended_video(&detail) => {
-                            hydrated_count += 1;
-                            Some(detail)
-                        }
+                        Ok(detail) if is_valid_recommended_video(&detail) => Some(detail),
                         Ok(_) => {
                             log::warn!(
                                 "home recommended detail had no playable media: aweme_id={}",
@@ -3055,11 +3064,20 @@ impl DouyinClient {
                             None
                         }
                     }
-                };
+                })
+                .buffered(HYDRATE_CONCURRENCY)
+                .collect()
+                .await;
 
-                let Some(video) = hydrated.or(fallback.filter(is_valid_recommended_video)) else {
-                    continue;
-                };
+            let mut videos = Vec::new();
+            let mut seen_ids = HashSet::new();
+            let mut hydrated_count = 0usize;
+            for ((_, fallback), maybe_detail) in prepared.into_iter().zip(hydrated) {
+                if maybe_detail.is_some() {
+                    hydrated_count += 1;
+                }
+                let video = maybe_detail.or(fallback.filter(is_valid_recommended_video));
+                let Some(video) = video else { continue };
                 if !video.aweme_id.trim().is_empty() && !seen_ids.insert(video.aweme_id.clone()) {
                     continue;
                 }
