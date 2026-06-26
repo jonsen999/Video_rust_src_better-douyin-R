@@ -1123,7 +1123,7 @@ export function SettingsView() {
                         >
                           <span
                             className={cn(
-                              "absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                              "absolute left-0 top-0.5 h-3.5 w-3.5 rounded-full bg-white transition-transform",
                               autoCreateFolder ? "translate-x-4.5" : "translate-x-0.5"
                             )}
                           />
@@ -1384,7 +1384,7 @@ export function SettingsView() {
                         </div>
                         <button
                           type="button"
-                          onClick={() => void openExternalUrl("https://github.com/anYuJia/better-douyin")}
+                          onClick={() => void openExternalUrl("https://github.com/anYuJia/better-douyin-R")}
                           className="w-full sm:w-auto shrink-0 group relative flex h-8.5 items-center justify-center rounded-[8px] bg-accent px-4 text-[0.74rem] font-black text-white shadow-lg shadow-accent/20 active:scale-[0.96] transition-[background-color,color,box-shadow,transform,opacity]"
                         >
                           <span className="relative z-10">去 GitHub 点 Star</span>
