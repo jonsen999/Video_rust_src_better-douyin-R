@@ -1235,15 +1235,15 @@ async fn init_client(state: State<'_, AppState>) -> Result<serde_json::Value, St
 
 /// 获取配置
 #[tauri::command]
-fn get_config(state: State<'_, AppState>) -> serde_json::Value {
-    let config = state.config.blocking_lock().clone();
+async fn get_config(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let config = state.config.lock().await.clone();
     let cookie_set = !config.cookie.trim().is_empty();
     let mut value = serde_json::to_value(&config).unwrap_or_else(|_| serde_json::json!({}));
     if let Some(object) = value.as_object_mut() {
         object.insert("cookie".to_string(), serde_json::json!(""));
         object.insert("cookie_set".to_string(), serde_json::json!(cookie_set));
     }
-    value
+    Ok(value)
 }
 
 /// 保存配置
