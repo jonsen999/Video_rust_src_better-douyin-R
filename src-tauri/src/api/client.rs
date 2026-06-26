@@ -107,6 +107,7 @@ pub struct DouyinClient {
     client: reqwest::Client,
     config: AppConfig,
     webid_cache: Arc<Mutex<Option<(String, Instant)>>>,
+    cookie_dict: Arc<HashMap<String, String>>,
 }
 
 impl DouyinClient {
@@ -123,12 +124,20 @@ impl DouyinClient {
         }
 
         let client = builder.build()?;
+        let cookie_dict = Arc::new(Self::cookies_to_dict(&config.cookie));
 
         Ok(Self {
             client,
             config,
             webid_cache: Arc::new(Mutex::new(None)),
+            cookie_dict,
         })
+    }
+
+    /// 返回当前 cookie 的解析结果（构造时一次性解析并缓存）。
+    /// 调用方按需 clone 或通过引用访问。
+    fn cookie_dict(&self) -> &HashMap<String, String> {
+        &self.cookie_dict
     }
 
     fn cookies_to_dict(cookie_str: &str) -> HashMap<String, String> {
@@ -153,7 +162,7 @@ impl DouyinClient {
     }
 
     pub fn im_session_id(&self) -> Option<String> {
-        let cookie_dict = Self::cookies_to_dict(&self.config.cookie);
+        let cookie_dict = self.cookie_dict();
         cookie_dict
             .get("sessionid")
             .or_else(|| cookie_dict.get("sessionid_ss"))
@@ -379,7 +388,7 @@ impl DouyinClient {
     }
 
     fn relation_uid_hash(&self) -> Option<String> {
-        let cookie_dict = Self::cookies_to_dict(&self.config.cookie);
+        let cookie_dict = self.cookie_dict();
         let uid = self
             .config
             .relation_signer
@@ -442,7 +451,7 @@ impl DouyinClient {
         &self,
         extra_headers: Option<&HashMap<String, String>>,
     ) -> HashMap<String, String> {
-        let cookie_dict = Self::cookies_to_dict(&self.config.cookie);
+        let cookie_dict = self.cookie_dict();
         let user_agent = get_user_agent();
         let mut headers = HashMap::from([
             ("session_aid".to_string(), "6383".to_string()),
@@ -553,7 +562,7 @@ impl DouyinClient {
         ]);
         let mut req = self.client.post(url);
         if with_signed_query {
-            let cookie_dict = Self::cookies_to_dict(&self.config.cookie);
+            let cookie_dict = self.cookie_dict();
             let fp = cookie_dict
                 .get("s_v_web_id")
                 .cloned()
@@ -3379,7 +3388,7 @@ impl DouyinClient {
         let reply_id = reply_id.trim();
         let reply_to_reply_id = reply_to_reply_id.trim();
 
-        let cookie_dict = Self::cookies_to_dict(&self.config.cookie);
+        let cookie_dict = self.cookie_dict();
         let ms_token = cookie_dict
             .get("msToken")
             .cloned()
@@ -4471,7 +4480,7 @@ impl DouyinClient {
         headers.insert("sec-fetch-mode".to_string(), "cors".to_string());
         headers.insert("sec-fetch-site".to_string(), "same-origin".to_string());
         headers.insert("x-tt-passport-trace-id".to_string(), trace_id);
-        let cookie_dict = Self::cookies_to_dict(&self.config.cookie);
+        let cookie_dict = self.cookie_dict();
         if let Some(csrf) = cookie_dict
             .get("passport_csrf_token")
             .or_else(|| cookie_dict.get("passport_csrf_token_default"))
