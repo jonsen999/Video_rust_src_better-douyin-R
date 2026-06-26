@@ -16,7 +16,7 @@ import { LikedView } from "@/components/liked/liked-view";
 import { CollectedView } from "@/components/collected/collected-view";
 import { FriendsStatusView } from "@/components/friends/friends-status-view";
 import { AnimatePresence, motion } from "framer-motion";
-import { easeConfig } from "@/lib/utils";
+import { cn, easeConfig } from "@/lib/utils";
 
 const TAURI_DRAG_HEIGHT = 36;
 
@@ -40,6 +40,9 @@ export function AppShell() {
   const currentView = useAppStore((s) => s.currentView);
   const commandOpen = useAppStore((s) => s.commandOpen);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const isTauri = typeof window !== "undefined" && Boolean((window as any).__TAURI_INTERNALS__);
+  const isMacOS = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.platform || "");
+  const needsTopInset = isTauri && !isMacOS;
 
   useLayoutEffect(() => {
     scrollRef.current?.scrollTo({ top: 0, behavior: "auto" });
@@ -51,7 +54,13 @@ export function AppShell() {
   };
 
   return (
-    <div className="relative flex h-screen w-screen overflow-hidden" onPointerDownCapture={handleWindowDrag}>
+    <div
+      className={cn(
+        "relative flex h-screen w-screen overflow-hidden",
+        needsTopInset && "shadow-[inset_0_0_0_1px_var(--color-border)]"
+      )}
+      onPointerDownCapture={handleWindowDrag}
+    >
       <WindowControls />
       {/* Sidebar */}
       <Sidebar />
@@ -62,7 +71,7 @@ export function AppShell() {
           className="pointer-events-none absolute left-0 right-[132px] top-0 z-30 h-9"
           style={{ WebkitAppRegion: "drag" } as React.CSSProperties & { WebkitAppRegion: string }}
         />
-        <div ref={scrollRef} className="flex-1 overflow-x-hidden overflow-y-auto pb-16">
+        <div ref={scrollRef} className={cn("flex-1 overflow-x-hidden overflow-y-auto pb-16", needsTopInset && "pt-9")}>
           <AnimatePresence initial={false} mode="wait">
             {renderView(currentView)}
           </AnimatePresence>
