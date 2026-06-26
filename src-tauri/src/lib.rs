@@ -876,6 +876,21 @@ async fn state_has_login_cookie(state: &State<'_, AppState>) -> bool {
     has_douyin_login_cookie(&parse_cookie_string(&config.cookie))
 }
 
+async fn ensure_feature_login(
+    state: &State<'_, AppState>,
+    client: &DouyinClient,
+    feature: &str,
+) -> Option<serde_json::Value> {
+    if !state_has_login_cookie(state).await {
+        return Some(feature_login_required_response(feature));
+    }
+
+    match client.verify_cookie().await {
+        Ok(status) if status.valid => None,
+        Ok(_) | Err(_) => Some(feature_login_required_response(feature)),
+    }
+}
+
 fn verify_required_response(message: &str, verify_url: &str) -> serde_json::Value {
     let message = if message.trim().is_empty() {
         "需要完成滑块验证后重试"
@@ -2362,8 +2377,8 @@ async fn get_liked_videos(
             return Ok(feature_login_required_response("点赞视频"));
         }
     };
-    if !state_has_login_cookie(&state).await {
-        return Ok(feature_login_required_response("点赞视频"));
+    if let Some(response) = ensure_feature_login(&state, &client, "点赞视频").await {
+        return Ok(response);
     }
 
     match client
@@ -2389,6 +2404,8 @@ async fn get_liked_videos(
                     "cursor": next_cursor,
                     "has_more": false
                 }))
+            } else if login_required_if_cookie_invalid(&client).await.is_some() {
+                Ok(feature_login_required_response("点赞视频"))
             } else {
                 Ok(verify_required_response(
                     "获取点赞视频失败，请完成验证后重试",
@@ -2428,8 +2445,8 @@ async fn get_collected_videos(
             return Ok(feature_login_required_response("收藏视频"));
         }
     };
-    if !state_has_login_cookie(&state).await {
-        return Ok(feature_login_required_response("收藏视频"));
+    if let Some(response) = ensure_feature_login(&state, &client, "收藏视频").await {
+        return Ok(response);
     }
 
     match client
@@ -2446,13 +2463,7 @@ async fn get_collected_videos(
         Err(error) => {
             let message = error.to_string();
             if looks_like_login_error(&message) {
-                Ok(api_login_or_verify_error_response(
-                    &client,
-                    "获取收藏视频失败",
-                    error,
-                    "https://www.douyin.com/user/self?showTab=favorite_collection",
-                )
-                .await)
+                Ok(feature_login_required_response("收藏视频"))
             } else {
                 Ok(api_verify_or_error_response(
                     "获取收藏视频失败",
@@ -2477,8 +2488,8 @@ async fn get_collected_mixes(
             return Ok(feature_login_required_response("收藏合集"));
         }
     };
-    if !state_has_login_cookie(&state).await {
-        return Ok(feature_login_required_response("收藏合集"));
+    if let Some(response) = ensure_feature_login(&state, &client, "收藏合集").await {
+        return Ok(response);
     }
 
     match client.get_collected_mixes(cursor, count).await {
@@ -2492,13 +2503,7 @@ async fn get_collected_mixes(
         Err(error) => {
             let message = error.to_string();
             if looks_like_login_error(&message) {
-                Ok(api_login_or_verify_error_response(
-                    &client,
-                    "获取收藏合集失败",
-                    error,
-                    "https://www.douyin.com/user/self?showTab=favorite_collection",
-                )
-                .await)
+                Ok(feature_login_required_response("收藏合集"))
             } else {
                 Ok(api_verify_or_error_response(
                     "获取收藏合集失败",
@@ -2532,8 +2537,8 @@ async fn get_mix_videos(
             return Ok(feature_login_required_response("收藏合集"));
         }
     };
-    if !state_has_login_cookie(&state).await {
-        return Ok(feature_login_required_response("收藏合集"));
+    if let Some(response) = ensure_feature_login(&state, &client, "收藏合集").await {
+        return Ok(response);
     }
 
     match client.get_mix_videos(&series_id, cursor, count).await {
