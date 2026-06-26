@@ -133,7 +133,7 @@ function emitCookieInvalidIfNeeded(payload: unknown) {
   const data = payload as Record<string, unknown>;
   if (data.security_blocked) return;
   const message = String(data.message || "Cookie 已失效，请重新登录").trim();
-  if (/请先设置\s*Cookie/i.test(message)) return;
+  if (isLocalLoginPromptMessage(message)) return;
   if (data.need_login !== true) return;
 
   window.dispatchEvent(new CustomEvent("dy-cookie-invalid", { detail: { message } }));
@@ -142,6 +142,10 @@ function emitCookieInvalidIfNeeded(payload: unknown) {
 function emitCookieInvalidFromError(error: unknown) {
   if (!error || typeof error !== "object") return;
   emitCookieInvalidIfNeeded(error);
+}
+
+function isLocalLoginPromptMessage(message: string) {
+  return /请先设置\s*Cookie|请登录后获取(?:点赞视频|收藏视频|收藏合集)/i.test(message);
 }
 
 let browserSocket: BrowserSocket | null = null;
