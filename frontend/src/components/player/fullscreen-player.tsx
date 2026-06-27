@@ -39,8 +39,9 @@ import {
 } from "@/lib/video-media";
 import {
   PlayerStatus,
-  ProgressBar,
 } from "./player-components";
+import { PlayerDescription } from "./player-description";
+import { PlayerPlaybackBar } from "./player-playback-bar";
 import { AuthorInfo } from "./player-info";
 import { PlayerActionButtons } from "./player-actions";
 import { TopCloseOverlay, MediaOverlays } from "./player-overlays";
@@ -2474,20 +2475,18 @@ export function FullscreenPlayer({
             </div>
 
             <div className="mt-0.5">
-	              <ProgressBar
-	                duration={duration}
-	                currentTime={currentTime}
-	                progressPct={progressPct}
-	                mediaItems={mediaItems}
-	                mediaIndex={activeMediaIndex}
-	                previewSrc={currentMedia && isVideoLikeMedia(currentMedia) ? currentMediaSrc : ""}
-	                onSeek={handleSeek}
-	                onSelectMedia={switchToMedia}
-	              />
+              <PlayerPlaybackBar
+                duration={duration}
+                currentTime={currentTime}
+                progressPct={progressPct}
+                mediaItems={mediaItems}
+                activeMediaIndex={activeMediaIndex}
+                previewSrc={currentMedia && isVideoLikeMedia(currentMedia) ? currentMediaSrc : ""}
+                onSeek={handleSeek}
+                onSelectMedia={switchToMedia}
+              />
 
-              <p className="mt-1 line-clamp-2 text-[0.82rem] leading-[1.32] text-white/90 drop-shadow-md">
-                {currentVideo.desc || "无描述"}
-              </p>
+              <PlayerDescription currentVideo={currentVideo} />
             </div>
           </div>
 
