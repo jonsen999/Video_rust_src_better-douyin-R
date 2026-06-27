@@ -37,14 +37,12 @@ import {
   shouldUseSeparateBgmForVideo,
   type VideoMediaItem,
 } from "@/lib/video-media";
-import {
-  PlayerStatus,
-} from "./player-components";
 import { PlayerDescription } from "./player-description";
 import { PlayerPlaybackBar } from "./player-playback-bar";
 import { AuthorInfo } from "./player-info";
 import { PlayerActionButtons } from "./player-actions";
-import { TopCloseOverlay, MediaOverlays } from "./player-overlays";
+import { TopCloseOverlay } from "./player-overlays";
+import { PlayerMediaStage } from "./player-media-stage";
 import {
   IMAGE_DURATION_SECONDS,
   LOAD_MORE_THRESHOLD,
@@ -826,6 +824,8 @@ export function FullscreenPlayer({
     event.preventDefault();
     togglePlayFromSurface(event.currentTarget.getAttribute("aria-label") === "暂停" ? "pause" : "play");
   }, [togglePlayFromSurface]);
+
+
 
   useEffect(() => {
     if (!open) return;
@@ -1630,6 +1630,18 @@ export function FullscreenPlayer({
     setShowLoadStatus(true);
   }, [clearLoadTimers, refreshCurrentVideoDetail, retryCurrentMedia, stopVideoProgressLoop]);
 
+  const handleImageLoad = useCallback(() => {
+    markMediaReady();
+    releaseMediaSwitchSoon();
+    if (desiredPlayingRef.current) {
+      setPlaying(true);
+    }
+  }, [markMediaReady, releaseMediaSwitchSoon]);
+
+  const handleImageError = useCallback(() => {
+    void handleMediaFailure();
+  }, [handleMediaFailure]);
+
   const scheduleLoadTimeout = useCallback(() => {
     if (loadTimeoutTimerRef.current) {
       window.clearTimeout(loadTimeoutTimerRef.current);
@@ -2190,194 +2202,127 @@ export function FullscreenPlayer({
         >
           <TopCloseOverlay onClose={closePlayer} />
 
-          <div
-            className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <AnimatePresence initial={false} custom={mediaTransitionDirection}>
-              <motion.div
-                key={mediaKey}
-                custom={mediaTransitionDirection}
-                variants={mediaMotionVariants}
-                initial="enter"
-                animate="center"
-                exit="exit"
-                transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-                className="absolute inset-0 flex items-center justify-center"
-                style={{ backfaceVisibility: "hidden", contain: "layout paint", willChange: "transform" }}
-              >
-                {currentMedia && isVideoLikeMedia(currentMedia) && (
-                  <video
-                    ref={setVideoElementRef}
-                    src={currentMediaSrc}
-	                    className="pointer-events-none h-full max-h-full w-full max-w-full object-contain"
-                    autoPlay={shouldAutoPlayCurrentMedia}
-                    loop={!hasMultipleMedia}
-                    playsInline
-                    muted={shouldUseBgmForCurrentMedia || muted || volume === 0}
-	                    preload={hasMultipleMedia ? "auto" : "metadata"}
-	                    onPointerDown={handleSurfacePointerDown}
-	                    onPointerUp={handleSurfacePointerUp}
-	                    onPointerCancel={handleSurfacePointerCancel}
-	                    onMouseDown={handleSurfaceMouseDown}
-	                    onMouseUp={handleSurfaceMouseUp}
-	                    onTouchStart={handleSurfaceTouchStart}
-	                    onTouchEnd={handleSurfaceTouchEnd}
-	                    onTouchCancel={handleSurfaceTouchEnd}
-	                    onClick={handleSurfaceClick}
-	                    onLoadStart={scheduleLoadTimeout}
-	                    onWaiting={showBufferingSoon}
-	                    onStalled={showBufferingSoon}
-                    onLoadedMetadata={(event) => {
-                      applyPlaybackRateToNode(event.currentTarget, playbackRateRef.current);
-                      restorePendingQualitySeek(event.currentTarget);
-                      syncVideoProgress(event.currentTarget);
-                      event.currentTarget.volume = effectiveVolume / 100;
-                      event.currentTarget.muted = shouldUseBgmForCurrentMedia || muted || volume === 0;
-                      if (event.currentTarget.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-                        markMediaReady();
-                      }
-                      resumeVideoIfDesired(event.currentTarget);
-                    }}
-                    onLoadedData={(event) => {
-                      applyPlaybackRateToNode(event.currentTarget, playbackRateRef.current);
-                      syncVideoProgress(event.currentTarget);
-                      markMediaReady();
-                      resumeVideoIfDesired(event.currentTarget);
-                    }}
-                    onDurationChange={(event) => {
-                      syncVideoProgress(event.currentTarget);
-                    }}
-                    onCanPlay={(event) => {
-                      applyPlaybackRateToNode(event.currentTarget, playbackRateRef.current);
-                      restorePendingQualitySeek(event.currentTarget);
-                      syncVideoProgress(event.currentTarget);
-                      markMediaReady();
-                      releaseMediaSwitchSoon();
-                      resumeVideoIfDesired(event.currentTarget);
-                    }}
-                    onTimeUpdate={(event) => {
-                      syncVideoProgress(event.currentTarget);
-                      if (loadState !== "ready" && event.currentTarget.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-                        markMediaReady();
-                      }
-                    }}
-                    onSeeking={(event) => syncVideoProgress(event.currentTarget)}
-                    onSeeked={(event) => syncVideoProgress(event.currentTarget)}
-		                    onPlay={(event) => {
-                      applyPlaybackRateToNode(event.currentTarget, playbackRateRef.current);
-		                      desiredPlayingRef.current = true;
-		                      playingRef.current = true;
-		                      syncVideoProgress(event.currentTarget);
-	                      setPlaying(true);
-	                      startVideoProgressLoop();
-	                    }}
-		                    onPlaying={(event) => {
-                      applyPlaybackRateToNode(event.currentTarget, playbackRateRef.current);
-	                      qualitySwitchingRef.current = false;
-                      if (qualitySwitchReleaseRef.current) {
-                        window.clearTimeout(qualitySwitchReleaseRef.current);
-                        qualitySwitchReleaseRef.current = null;
-                      }
-	                      playingRef.current = true;
-	                      syncVideoProgress(event.currentTarget);
-	                      if (loadState !== "ready") {
-	                        markMediaReady();
-                      }
-                      setPlaying(true);
-                      startVideoProgressLoop();
-                    }}
-		                    onPause={(event) => {
-	                      stopVideoProgressLoop();
-                      if (qualitySwitchingRef.current && desiredPlayingRef.current) {
-                        window.setTimeout(() => resumeVideoIfDesired(event.currentTarget), 80);
-                        return;
-                      }
-                      if ((mediaSwitchingRef.current || event.currentTarget.ended) && desiredPlayingRef.current) {
-                        return;
-                      }
-	                      if (!mediaSwitchingRef.current) {
-                        clearLoadTimers();
-	                        playingRef.current = false;
-	                        setPlaying(false);
-	                        desiredPlayingRef.current = false;
-                        setShowLoadStatus(false);
-                        setLoadState("ready");
-	                      }
-		                    }}
-                    onRateChange={(event) => {
-                      applyPlaybackRateToNode(event.currentTarget, playbackRateRef.current);
-                    }}
-                    onEnded={() => {
-                      desiredPlayingRef.current = true;
-                      mediaSwitchingRef.current = true;
-                      setPlaying(true);
-                      stopVideoProgressLoop();
-                      advanceMediaSequence();
-                    }}
-                    onError={() => {
-                      void handleMediaFailure();
-                    }}
-                  />
-                )}
-
-                {currentMedia?.type === "image" && (
-                  <img
-	                    src={currentMediaSrc}
-	                    alt={currentVideo.desc || "图片"}
-	                    className="pointer-events-none max-h-full max-w-full object-contain"
-	                    onPointerDown={handleSurfacePointerDown}
-	                    onPointerUp={handleSurfacePointerUp}
-	                    onPointerCancel={handleSurfacePointerCancel}
-	                    onMouseDown={handleSurfaceMouseDown}
-	                    onMouseUp={handleSurfaceMouseUp}
-	                    onTouchStart={handleSurfaceTouchStart}
-	                    onTouchEnd={handleSurfaceTouchEnd}
-	                    onTouchCancel={handleSurfaceTouchEnd}
-	                    onClick={handleSurfaceClick}
-	                    onLoad={() => {
-                      markMediaReady();
-                      releaseMediaSwitchSoon();
-                      if (desiredPlayingRef.current) {
-                        setPlaying(true);
-                      }
-                    }}
-                    onError={() => {
-                      void handleMediaFailure();
-                    }}
-                  />
-                )}
-
-                {!currentMedia && (
-                  <PlayerStatus
-                    title="没有可播放的媒体"
-                    message="当前作品没有返回视频或图片地址。"
-                    onRetry={retryCurrentMedia}
-                    state="error"
-                  />
-	                )}
-              </motion.div>
-            </AnimatePresence>
-
-            <div
-              ref={surfaceHitRef}
-              role="button"
-              tabIndex={0}
-              className="absolute inset-0 z-10 cursor-default bg-black/[0.001]"
-              aria-label={playing ? "暂停" : "播放"}
-              onClick={handleSurfaceClick}
-            />
-
-            <MediaOverlays
-              loadState={loadState}
-              showLoadStatus={showLoadStatus}
-              playing={playing}
-              hasCurrentMedia={Boolean(currentMedia)}
-              isVideoLikeMedia={currentMedia ? isVideoLikeMedia(currentMedia) : false}
-              navigationNotice={navigationNotice}
-              onRetry={retryCurrentMedia}
-            />
-          </div>
+          <PlayerMediaStage
+            mediaKey={mediaKey}
+            mediaTransitionDirection={mediaTransitionDirection}
+            currentMedia={currentMedia}
+            currentMediaSrc={currentMediaSrc}
+            currentVideo={currentVideo}
+            shouldAutoPlayCurrentMedia={shouldAutoPlayCurrentMedia}
+            hasMultipleMedia={hasMultipleMedia}
+            shouldUseBgmForCurrentMedia={shouldUseBgmForCurrentMedia}
+            muted={muted}
+            volume={volume}
+            playing={playing}
+            loadState={loadState}
+            showLoadStatus={showLoadStatus}
+            navigationNotice={navigationNotice}
+            setVideoElementRef={setVideoElementRef}
+            surfaceHitRef={surfaceHitRef}
+            handleSurfacePointerDown={handleSurfacePointerDown}
+            handleSurfacePointerUp={handleSurfacePointerUp}
+            handleSurfacePointerCancel={handleSurfacePointerCancel}
+            handleSurfaceMouseDown={handleSurfaceMouseDown}
+            handleSurfaceMouseUp={handleSurfaceMouseUp}
+            handleSurfaceTouchStart={handleSurfaceTouchStart}
+            handleSurfaceTouchEnd={handleSurfaceTouchEnd}
+            handleSurfaceClick={handleSurfaceClick}
+            scheduleLoadTimeout={scheduleLoadTimeout}
+            showBufferingSoon={showBufferingSoon}
+            onLoadedMetadata={(event) => {
+              applyPlaybackRateToNode(event.currentTarget, playbackRateRef.current);
+              restorePendingQualitySeek(event.currentTarget);
+              syncVideoProgress(event.currentTarget);
+              event.currentTarget.volume = effectiveVolume / 100;
+              event.currentTarget.muted = shouldUseBgmForCurrentMedia || muted || volume === 0;
+              if (event.currentTarget.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+                markMediaReady();
+              }
+              resumeVideoIfDesired(event.currentTarget);
+            }}
+            onLoadedData={(event) => {
+              applyPlaybackRateToNode(event.currentTarget, playbackRateRef.current);
+              syncVideoProgress(event.currentTarget);
+              markMediaReady();
+              resumeVideoIfDesired(event.currentTarget);
+            }}
+            onDurationChange={(event) => {
+              syncVideoProgress(event.currentTarget);
+            }}
+            onCanPlay={(event) => {
+              applyPlaybackRateToNode(event.currentTarget, playbackRateRef.current);
+              restorePendingQualitySeek(event.currentTarget);
+              syncVideoProgress(event.currentTarget);
+              markMediaReady();
+              releaseMediaSwitchSoon();
+              resumeVideoIfDesired(event.currentTarget);
+            }}
+            onTimeUpdate={(event) => {
+              syncVideoProgress(event.currentTarget);
+              if (loadState !== "ready" && event.currentTarget.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+                markMediaReady();
+              }
+            }}
+            onSeeking={(event) => syncVideoProgress(event.currentTarget)}
+            onSeeked={(event) => syncVideoProgress(event.currentTarget)}
+            onPlay={(event) => {
+              applyPlaybackRateToNode(event.currentTarget, playbackRateRef.current);
+              desiredPlayingRef.current = true;
+              playingRef.current = true;
+              syncVideoProgress(event.currentTarget);
+              setPlaying(true);
+              startVideoProgressLoop();
+            }}
+            onPlaying={(event) => {
+              applyPlaybackRateToNode(event.currentTarget, playbackRateRef.current);
+              qualitySwitchingRef.current = false;
+              if (qualitySwitchReleaseRef.current) {
+                window.clearTimeout(qualitySwitchReleaseRef.current);
+                qualitySwitchReleaseRef.current = null;
+              }
+              playingRef.current = true;
+              syncVideoProgress(event.currentTarget);
+              if (loadState !== "ready") {
+                markMediaReady();
+              }
+              setPlaying(true);
+              startVideoProgressLoop();
+            }}
+            onPause={(event) => {
+              stopVideoProgressLoop();
+              if (qualitySwitchingRef.current && desiredPlayingRef.current) {
+                window.setTimeout(() => resumeVideoIfDesired(event.currentTarget), 80);
+                return;
+              }
+              if ((mediaSwitchingRef.current || event.currentTarget.ended) && desiredPlayingRef.current) {
+                return;
+              }
+              if (!mediaSwitchingRef.current) {
+                clearLoadTimers();
+                playingRef.current = false;
+                setPlaying(false);
+                desiredPlayingRef.current = false;
+                setShowLoadStatus(false);
+                setLoadState("ready");
+              }
+            }}
+            onRateChange={(event) => {
+              applyPlaybackRateToNode(event.currentTarget, playbackRateRef.current);
+            }}
+            onEnded={() => {
+              desiredPlayingRef.current = true;
+              mediaSwitchingRef.current = true;
+              setPlaying(true);
+              stopVideoProgressLoop();
+              advanceMediaSequence();
+            }}
+            onError={() => {
+              void handleMediaFailure();
+            }}
+            onImageLoad={handleImageLoad}
+            onImageError={handleImageError}
+            retryCurrentMedia={retryCurrentMedia}
+          />
 
           <div
             className="absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-black/85 via-black/45 to-transparent px-3 pb-2 pt-20 text-white"
