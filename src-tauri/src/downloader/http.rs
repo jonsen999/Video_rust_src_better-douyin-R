@@ -3,7 +3,7 @@
 use crate::config::{get_user_agent, AppConfig};
 use anyhow::Result;
 use reqwest::header::{
-    HeaderMap, HeaderValue, ACCEPT, ACCEPT_ENCODING, CONTENT_TYPE, COOKIE, RANGE, REFERER,
+    HeaderMap, HeaderValue, ACCEPT, ACCEPT_ENCODING, COOKIE, RANGE, REFERER,
     USER_AGENT,
 };
 use std::time::Duration;
@@ -41,4 +41,3 @@ pub(crate) fn build_download_headers(config: &AppConfig) -> HeaderMap {
 
     headers
 }
-

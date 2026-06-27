@@ -1,9 +1,7 @@
 //! 下载质量选择
 
 use crate::api::types::VideoInfo;
-use crate::config::AppConfig;
 use crate::media_utils::is_dash_video_only_url;
-use serde::de::DeserializeOwned;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

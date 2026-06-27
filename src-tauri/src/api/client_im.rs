@@ -1583,9 +1583,9 @@ impl DouyinClient {
                     .and_then(|value| value.as_str())
                     .unwrap_or_default()
                     .to_string();
-                
+
                 let mut text = String::new();
-                
+
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw_content) {
                     if let Some(parsed_obj) = parsed.as_object() {
                         if parsed_obj.contains_key("command_type") || parsed_obj.get("command_type").and_then(|v| v.as_i64()) == Some(6) {
@@ -1624,7 +1624,7 @@ impl DouyinClient {
                 } else {
                     text = raw_content.clone();
                 }
-                
+
                 let ext_value = object.get("ext");
                 let ext_obj = ext_value.and_then(|v| v.as_object()).cloned().or_else(|| {
                     ext_value

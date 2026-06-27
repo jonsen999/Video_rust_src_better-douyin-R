@@ -1287,4 +1287,3 @@ fn looks_like_logged_out_error(message: &str) -> bool {
         || lower.contains("login required")
         || lower.contains("session expired")
 }
-

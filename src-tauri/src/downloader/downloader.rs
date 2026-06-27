@@ -2,30 +2,25 @@
 
 use crate::api::types::{DownloadMediaItem, DownloadStatus, DownloadTask, MediaType, VideoInfo};
 use crate::api::DouyinClient;
-use crate::config::{get_user_agent, AppConfig};
+use crate::config::AppConfig;
 use crate::history::HistoryManager;
 use crate::media_utils::is_dash_video_only_url;
 use anyhow::{anyhow, Result};
-use chrono::{Local, TimeZone};
+use chrono::Local;
 use futures::StreamExt;
-use reqwest::header::{
-    HeaderMap, HeaderValue, ACCEPT, ACCEPT_ENCODING, CONTENT_TYPE, COOKIE, RANGE, REFERER,
-    USER_AGENT,
-};
+use reqwest::header::{HeaderMap, CONTENT_TYPE};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use tokio::fs::{File, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, Mutex};
-use url::Url;
 
-use super::downloaded_cache::{add_to_downloaded_cache, ensure_downloaded_cache, is_complete_download_file, load_all_downloaded_set, load_downloaded_set, record_downloaded};
-use super::filename::{build_output_dir, create_unique_output_file, generate_filename_with_config, media_extension, media_type_display, media_type_name, render_template, sanitize_extension, sanitize_filename, template_datetime, template_value, truncate_chars, truncate_filename_text, unique_output_path};
+use super::downloaded_cache::{add_to_downloaded_cache, ensure_downloaded_cache, record_downloaded};
+use super::filename::{build_output_dir, create_unique_output_file, generate_filename_with_config, media_extension, media_type_display, media_type_name, truncate_chars};
 use super::http::{build_download_client, build_download_headers};
-use super::quality::{best_target_candidate, bit_rate_height, bit_rate_metric, clean_video_download_url, collect_video_candidates, dimension_quality_height, is_watermark_url, long_side_quality_height, nearest_standard_quality_height, ordered_video_urls, parse_quality_height_from_text, select_video_url, standard_quality_height_from_dimension, DownloadQuality, VideoCandidate};
+use super::quality::{ordered_video_urls, select_video_url, DownloadQuality};
 
 
 
@@ -2119,8 +2114,11 @@ fn estimate_batch_eta(
 mod tests {
     use super::*;
     use crate::api::types::BitRateInfo;
+    use chrono::TimeZone;
+    use super::super::downloaded_cache::{
+        extract_downloaded_aweme_id, is_complete_download_file, parse_downloaded_set,
+    };
     use super::super::filename::MAX_FILENAME_BYTES;
-    use super::super::downloaded_cache::{extract_downloaded_aweme_id, parse_downloaded_set};
 
     fn video_with_quality_candidates() -> VideoInfo {
         let mut video = VideoInfo::default();

@@ -1,6 +1,6 @@
 //! 文件名模板和路径
 
-use crate::api::types::{DownloadMediaItem, MediaType};
+use crate::api::types::MediaType;
 use crate::config::AppConfig;
 use anyhow::{anyhow, Result};
 use chrono::{Local, TimeZone};
