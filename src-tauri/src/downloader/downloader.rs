@@ -21,6 +21,7 @@ use super::downloaded_cache::{add_to_downloaded_cache, ensure_downloaded_cache, 
 use super::events::{emit_event, estimate_batch_eta, wait_if_paused};
 use super::filename::{build_output_dir, create_unique_output_file, generate_filename_with_config, media_extension, media_type_display, media_type_name, truncate_chars};
 use super::http::{build_download_client, build_download_headers};
+use super::media_request::request_media_with_fallback;
 use super::quality::{ordered_video_urls, select_video_url, DownloadQuality};
 
 
@@ -1984,85 +1985,6 @@ impl Downloader {
 
 /// 从作者目录的隐藏文件 `.downloaded` 加载已下载的 aweme_id 集合
 
-
-async fn request_media_with_fallback(
-    client: &reqwest::Client,
-    config: &AppConfig,
-    aweme_id: &str,
-    media: &DownloadMediaItem,
-    headers: &HeaderMap,
-) -> Result<(reqwest::Response, String)> {
-    if media.r#type == "video" && is_dash_video_only_url(&media.url) {
-        if aweme_id.trim().is_empty() {
-            return Err(anyhow!("下载地址是无声音轨的视频分片，缺少作品ID无法刷新"));
-        }
-
-        let fallback_urls = fresh_video_download_urls(config, aweme_id)
-            .await
-            .unwrap_or_default();
-        for url in fallback_urls {
-            if is_dash_video_only_url(&url) {
-                continue;
-            }
-
-            let fallback_response = client.get(&url).headers(headers.clone()).send().await?;
-            if fallback_response.status().is_success() {
-                log::info!(
-                    "download url refreshed from dash video-only source: aweme_id={}",
-                    aweme_id
-                );
-                return Ok((fallback_response, url));
-            }
-        }
-
-        return Err(anyhow!("没有可用的带音频视频下载地址"));
-    }
-
-    let response = client
-        .get(&media.url)
-        .headers(headers.clone())
-        .send()
-        .await?;
-
-    if response.status().is_success() {
-        return Ok((response, media.url.clone()));
-    }
-
-    let initial_status = response.status();
-    if media.r#type != "video" || aweme_id.trim().is_empty() {
-        return Err(anyhow!("HTTP error: {}", initial_status));
-    }
-
-    let fallback_urls = fresh_video_download_urls(config, aweme_id)
-        .await
-        .unwrap_or_default();
-    for url in fallback_urls {
-        if url == media.url || is_dash_video_only_url(&url) {
-            continue;
-        }
-
-        let fallback_response = client.get(&url).headers(headers.clone()).send().await?;
-        if fallback_response.status().is_success() {
-            log::info!(
-                "download url refreshed after HTTP {}: aweme_id={}",
-                initial_status,
-                aweme_id
-            );
-            return Ok((fallback_response, url));
-        }
-    }
-
-    Err(anyhow!("HTTP error: {}", initial_status))
-}
-
-async fn fresh_video_download_urls(config: &AppConfig, aweme_id: &str) -> Result<Vec<String>> {
-    let client = DouyinClient::new(config.clone())?;
-    let video = client.get_video_detail(aweme_id).await?;
-    Ok(ordered_video_urls(
-        &video,
-        DownloadQuality::from_config(&config.download_quality),
-    ))
-}
 
 
 /// 选择视频下载URL
