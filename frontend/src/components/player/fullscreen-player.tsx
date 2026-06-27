@@ -6,31 +6,11 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
-  type ReactNode,
   type TouchEvent as ReactTouchEvent,
   type UIEvent as ReactUIEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import {
-  Check,
-  Download,
-  Gauge,
-  Heart,
-  Info,
-  Loader2,
-  MessageCircle,
-  Music,
-  Pause,
-  Play,
-  Send,
-  Share2,
-  Star,
-  Volume2,
-  VolumeX,
-  X,
-} from "lucide-react";
-import { cn, formatDuration, formatNumber } from "@/lib/utils";
 import { prewarmVideoForPlayback } from "@/lib/media-prewarm";
 import {
   copyTextToClipboard,
@@ -58,17 +38,16 @@ import {
   type VideoMediaItem,
 } from "@/lib/video-media";
 import {
-  InlinePlayerButton,
-  PlayerIconButton,
   PlayerStatus,
   ProgressBar,
-  TimeLabel,
 } from "./player-components";
+import { AuthorInfo } from "./player-info";
+import { PlayerActionButtons } from "./player-actions";
+import { TopCloseOverlay, MediaOverlays } from "./player-overlays";
 import {
   IMAGE_DURATION_SECONDS,
   LOAD_MORE_THRESHOLD,
   MAX_PRELOADED_MEDIA_NODES,
-  PLAYBACK_RATES,
   PLAYER_MEDIA_ADVANCE_PRELOAD_TIMEOUT_MS,
   PLAYER_NEXT_VIDEO_PRELOAD_AHEAD_SECONDS,
   PLAYER_PANEL_CLOSE_DELAY_MS,
@@ -82,7 +61,6 @@ import {
   WHEEL_VIDEO_SWITCH_THRESHOLD,
   applyPlaybackRateToNode,
   finiteMediaTime,
-  formatCommentTime,
   getDocumentVideoNode,
   isKeyboardInputTarget,
   mediaMotionVariants,
@@ -2209,18 +2187,7 @@ export function FullscreenPlayer({
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
         >
-          <div
-            className="absolute inset-x-0 top-0 z-30 flex items-center bg-gradient-to-b from-black/70 to-transparent px-5 py-4"
-            onClick={(event) => event.stopPropagation()}
-          >
-	            <button
-	              onClick={closePlayer}
-	              className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white backdrop-blur-md transition-[background-color,transform] hover:bg-white/20 active:scale-[0.96]"
-	              aria-label="关闭播放器"
-	            >
-              <X className="h-5 w-5" />
-            </button>
-          </div>
+          <TopCloseOverlay onClose={closePlayer} />
 
           <div
             className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden"
@@ -2400,39 +2367,15 @@ export function FullscreenPlayer({
               onClick={handleSurfaceClick}
             />
 
-            {loadState === "loading" && showLoadStatus && currentMedia && isVideoLikeMedia(currentMedia) && (
-              <PlayerStatus title="正在加载媒体..." message="正在通过本地代理拉取播放地址" />
-            )}
-            {loadState === "error" && currentMedia && (
-              <PlayerStatus
-                title="媒体加载失败"
-                message="可以重试，或打开详情复制原始媒体链接。"
-                state="error"
-                onRetry={retryCurrentMedia}
-              />
-            )}
-
-            {!playing && loadState === "ready" && (
-              <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
-                <div className="flex h-16 w-16 items-center justify-center rounded-full border border-white/20 bg-white/15 shadow-[0_18px_52px_rgba(0,0,0,0.4)] backdrop-blur-md">
-                  <Play className="ml-1 h-8 w-8 fill-white" />
-                </div>
-              </div>
-            )}
-
-            <AnimatePresence initial={false}>
-              {navigationNotice && (
-                <motion.div
-                  initial={{ opacity: 0, y: 8, scale: 0.98 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 6, scale: 0.98 }}
-                  transition={{ duration: 0.16 }}
-                  className="pointer-events-none absolute left-1/2 top-[44%] z-20 -translate-x-1/2 rounded-full bg-black/58 px-4 py-2 text-[0.82rem] font-semibold text-white shadow-[0_12px_32px_rgba(0,0,0,0.35)] backdrop-blur-md"
-                >
-                  {navigationNotice}
-                </motion.div>
-              )}
-            </AnimatePresence>
+            <MediaOverlays
+              loadState={loadState}
+              showLoadStatus={showLoadStatus}
+              playing={playing}
+              hasCurrentMedia={Boolean(currentMedia)}
+              isVideoLikeMedia={currentMedia ? isVideoLikeMedia(currentMedia) : false}
+              navigationNotice={navigationNotice}
+              onRetry={retryCurrentMedia}
+            />
           </div>
 
           <div
@@ -2440,808 +2383,94 @@ export function FullscreenPlayer({
             onClick={(event) => event.stopPropagation()}
           >
             <div className="flex min-w-0 items-center justify-between gap-3">
-              <button
-                type="button"
-                className={cn(
-                  "flex min-w-0 items-center gap-2 rounded-full py-0.5 pr-2 transition-[background-color,opacity,transform]",
-                  canOpenAuthor
-                    ? "cursor-pointer hover:bg-white/10 active:scale-[0.98]"
-                    : "cursor-default opacity-75"
-                )}
-                disabled={!canOpenAuthor}
-                title={canOpenAuthor ? "进入作者主页" : "作者信息不可用"}
-                aria-label={canOpenAuthor ? `进入 ${authorName} 主页` : "作者信息不可用"}
-	                    onClick={(event) => {
-	                      event.stopPropagation();
-	                      if (!currentVideo || !canOpenAuthor) return;
-	                      releasePlayerMediaResources();
-	                      onAuthor?.(currentVideo);
-	                    }}
-              >
-                <div className="h-7 w-7 shrink-0 overflow-hidden rounded-full border-2 border-white/30 bg-white/10">
-                  {authorAvatar ? (
-                    <img
-                      src={mediaProxyUrl(authorAvatar, "image")}
-                      alt={authorName}
-                      className="h-full w-full object-cover"
-                    />
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center bg-accent text-[0.72rem] font-bold text-white">
-                      {authorName.slice(0, 1)}
-                    </div>
-                  )}
-                </div>
-                <span className="truncate text-[0.88rem] font-semibold drop-shadow-md">@{authorName}</span>
-              </button>
+              <AuthorInfo
+                authorAvatar={authorAvatar}
+                authorName={authorName}
+                canOpenAuthor={canOpenAuthor}
+                onAuthorClick={() => {
+                  if (!currentVideo || !canOpenAuthor) return;
+                  releasePlayerMediaResources();
+                  onAuthor?.(currentVideo);
+                }}
+              />
 
-              <div className="flex min-w-0 max-w-[66vw] items-center gap-1 overflow-visible pb-0.5">
-                <InlinePlayerButton
-                  label="点赞"
-                  count={likeCount}
-                  active={liked}
-                  activeClassName="fill-accent text-accent"
-                  disabled={relationSubmitting !== null}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void toggleLike();
-                  }}
-                >
-                  {relationSubmitting === "like" ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Heart className={cn("h-4 w-4", liked && "fill-accent text-accent")} />
-                  )}
-                </InlinePlayerButton>
-
-                <InlinePlayerButton
-                  label="收藏"
-                  count={favoriteCount}
-                  active={favorited}
-                  activeClassName="fill-warning text-warning"
-                  disabled={relationSubmitting !== null}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void toggleCollect();
-                  }}
-                >
-                  {relationSubmitting === "collect" ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Star className={cn("h-4 w-4", favorited && "fill-warning text-warning")} />
-                  )}
-                </InlinePlayerButton>
-
-                <div
-                  className="relative shrink-0"
-                  onPointerEnter={(event) => openPanelOnPointerEnter("volume", event)}
-                  onPointerLeave={(event) => closePanelOnPointerLeave("volume", event)}
-                  onMouseEnter={() => openToolPanel("volume")}
-                  onMouseLeave={() => schedulePanelClose("volume")}
-                >
-                  <PlayerIconButton
-                    label="音量"
-                    onClick={(event) => togglePanel("volume", event)}
-                    onPointerDown={(event) => openPanelOnPointerDown("volume", event)}
-                    active={openPanel === "volume"}
-                  >
-                    {muted || volume === 0 ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
-                  </PlayerIconButton>
-                  <AnimatePresence>
-                    {openPanel === "volume" && (
-                      <motion.div
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: 6 }}
-                        transition={{ duration: 0.16 }}
-                        className="absolute bottom-9 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-xl bg-[#141414]/95 px-3 py-2 shadow-[0_4px_16px_rgba(0,0,0,0.4)] backdrop-blur-xl"
-                        onPointerEnter={(event) => openPanelOnPointerEnter("volume", event)}
-                        onPointerLeave={(event) => closePanelOnPointerLeave("volume", event)}
-                        onMouseEnter={() => openToolPanel("volume")}
-                        onMouseLeave={() => schedulePanelClose("volume")}
-                        onClick={(event) => event.stopPropagation()}
-                        onWheel={(event) => event.stopPropagation()}
-                      >
-                        <button
-                          type="button"
-                          onClick={toggleMute}
-                          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-white transition-colors hover:text-white/70"
-                          aria-label={muted ? "取消静音" : "静音"}
-                        >
-                          {muted || volume === 0 ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
-                        </button>
-                        <input
-                          type="range"
-                          min={0}
-                          max={100}
-                          value={effectiveVolume}
-                          onChange={(event) => handleVolumeChange(Number(event.currentTarget.value))}
-                          className="h-1 w-[100px] cursor-pointer accent-accent"
-                          aria-label="音量"
-                        />
-                        <span className="min-w-9 text-center text-[0.78rem] font-medium tabular-nums text-white/90">
-                          {effectiveVolume}
-                        </span>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-
-                <div
-                  className="relative shrink-0"
-                  onPointerEnter={(event) => openPanelOnPointerEnter("rate", event)}
-                  onPointerLeave={(event) => closePanelOnPointerLeave("rate", event)}
-                  onMouseEnter={() => openToolPanel("rate")}
-                  onMouseLeave={() => schedulePanelClose("rate")}
-                >
-                  <PlayerIconButton
-                    label="倍速"
-                    onClick={(event) => togglePanel("rate", event)}
-                    onPointerDown={(event) => openPanelOnPointerDown("rate", event)}
-                    active={openPanel === "rate"}
-                  >
-                    <span className="text-[0.78rem] font-semibold tabular-nums">{playbackRate}x</span>
-                  </PlayerIconButton>
-                  <AnimatePresence>
-                    {openPanel === "rate" && (
-                      <motion.div
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: 6 }}
-                        transition={{ duration: 0.16 }}
-                        className="absolute bottom-9 left-1/2 z-40 flex max-w-[200px] -translate-x-1/2 flex-wrap items-center justify-center gap-1 rounded-xl bg-[#141414]/95 p-2 shadow-[0_4px_16px_rgba(0,0,0,0.4)] backdrop-blur-xl"
-                        onPointerEnter={(event) => openPanelOnPointerEnter("rate", event)}
-                        onPointerLeave={(event) => closePanelOnPointerLeave("rate", event)}
-                        onMouseEnter={() => openToolPanel("rate")}
-                        onMouseLeave={() => schedulePanelClose("rate")}
-                        onClick={(event) => event.stopPropagation()}
-                      >
-                        {PLAYBACK_RATES.map((rate) => (
-                          <button
-                            key={rate}
-                            type="button"
-                            onClick={(event) => handlePlaybackRateChange(rate, event)}
-                            className={cn(
-                              "rounded-lg px-2.5 py-1.5 text-[0.72rem] font-medium text-white/70 transition-colors hover:bg-white/12 hover:text-white",
-                              rate === playbackRate && "bg-accent/20 text-accent"
-                            )}
-                          >
-                            {rate}x
-                          </button>
-                        ))}
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-
-                {showQualityControl && (
-                  <div
-                    className="relative shrink-0"
-                    onPointerEnter={(event) => openPanelOnPointerEnter("quality", event)}
-                    onPointerLeave={(event) => closePanelOnPointerLeave("quality", event)}
-                    onMouseEnter={() => openToolPanel("quality")}
-                    onMouseLeave={() => schedulePanelClose("quality")}
-                  >
-                    <PlayerIconButton
-                      label={`画质 ${activeQualityOption?.label || "自动"}`}
-                      onClick={(event) => togglePanel("quality", event)}
-                      onPointerDown={(event) => openPanelOnPointerDown("quality", event)}
-                      active={openPanel === "quality"}
-                    >
-                      <Gauge className="h-4 w-4" />
-                    </PlayerIconButton>
-                    <AnimatePresence>
-                      {openPanel === "quality" && (
-                        <motion.div
-                          initial={{ opacity: 0, y: 6 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: 6 }}
-                          transition={{ duration: 0.16 }}
-                          className="absolute bottom-9 left-1/2 z-40 flex w-[160px] -translate-x-1/2 flex-col gap-1 rounded-xl bg-[#141414]/95 p-1.5 shadow-[0_4px_16px_rgba(0,0,0,0.4)] backdrop-blur-xl"
-                          onPointerEnter={(event) => openPanelOnPointerEnter("quality", event)}
-                          onPointerLeave={(event) => closePanelOnPointerLeave("quality", event)}
-                          onMouseEnter={() => openToolPanel("quality")}
-                          onMouseLeave={() => schedulePanelClose("quality")}
-                          onClick={(event) => event.stopPropagation()}
-                          onWheel={(event) => event.stopPropagation()}
-                        >
-                          <div className="flex items-center justify-between px-1.5 pb-1">
-                            <span className="text-[0.68rem] font-semibold uppercase tracking-wider text-white/45">
-                              画质
-                            </span>
-                            <span className="text-[0.68rem] font-bold tabular-nums text-accent">
-                              {activeQualityOption?.label || "自动"}
-                            </span>
-                          </div>
-                          {qualityOptions.map((option) => (
-                            <button
-                              key={option.key}
-                              type="button"
-                              onClick={(event) => handleQualityChange(option.key, event)}
-                              className={cn(
-                                "flex h-8 min-w-0 items-center gap-2 rounded-md px-2 text-left transition-colors hover:bg-white/12",
-                                option.key === activeQualityOption?.key && "bg-accent/18 text-accent"
-                              )}
-                            >
-                              <span className="min-w-0 flex-1 text-[0.78rem] font-bold tabular-nums">
-                                {option.label}
-                              </span>
-                              {option.key === activeQualityOption?.key && (
-                                <Check className="h-3.5 w-3.5 shrink-0" />
-                              )}
-                            </button>
-                          ))}
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-                )}
-
-                <div
-                  className="relative shrink-0"
-                  onPointerEnter={(event) => {
-                    if (event.pointerType !== "touch") openCommentsPanel(event);
-                  }}
-                  onMouseEnter={() => openCommentsPanel()}
-                  onPointerLeave={(event) => {
-                    if (event.pointerType !== "touch") scheduleTransientCommentsClose(event);
-                  }}
-                  onMouseLeave={() => scheduleTransientCommentsClose()}
-                >
-                  <PlayerIconButton
-                    label="评论区"
-                    onClick={(event) => {
-                      event.stopPropagation();
-	                      clearPanelCloseTimer();
-	                      setOpenPanel(null);
-	                      if (commentsOpen) {
-	                        closeCommentsPanel(event);
-	                      } else {
-	                        openCommentsPanel(event, { sticky: true });
-	                      }
-	                    }}
-                    active={commentsOpen}
-                  >
-                    <MessageCircle className="h-4 w-4" />
-                  </PlayerIconButton>
-                  <AnimatePresence>
-                    {commentsOpen && (
-                      <motion.div
-                        initial={{ opacity: 0, y: 8, scale: 0.985 }}
-                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                        exit={{ opacity: 0, y: 8, scale: 0.985 }}
-                        transition={{ duration: 0.18 }}
-                        className="fixed bottom-20 right-3 z-50 flex w-[min(380px,calc(100vw-24px))] max-h-[min(520px,72vh)] flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[#111111]/80 shadow-[0_18px_60px_rgba(0,0,0,0.45)] backdrop-blur-2xl sm:right-5"
-                        onPointerEnter={markCommentsPanelSticky}
-                        onMouseEnter={() => markCommentsPanelSticky()}
-                        onClick={(event) => event.stopPropagation()}
-                        onWheel={(event) => event.stopPropagation()}
-                      >
-                        <div className="flex h-11 shrink-0 items-center gap-2 border-b border-white/[0.08] px-3">
-                          <div className="min-w-0 flex-1">
-                            <div className="text-[0.78rem] font-semibold text-white/90">评论区</div>
-                            <div className="text-[0.64rem] text-white/42">
-                              {formatNumber(commentsTotal || currentVideo?.statistics?.comment_count || comments.length || 0)} 条评论
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            aria-label="关闭评论区"
-                            onClick={closeCommentsPanel}
-                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white/55 transition-colors hover:bg-white/[0.08] hover:text-white"
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                        <div className="share-friends-scroll min-h-0 flex-1 overflow-y-auto p-2" onScroll={handleCommentsScroll}>
-                          {commentsLoading && comments.length === 0 ? (
-                            <div className="flex h-32 items-center justify-center gap-2 text-[0.74rem] text-white/58">
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                              正在获取评论
-                            </div>
-                          ) : commentsError && comments.length === 0 ? (
-                            <div className="rounded-lg bg-white/[0.06] px-3 py-3 text-[0.74rem] leading-5 text-white/62">
-                              {commentsError}
-                            </div>
-                          ) : comments.length === 0 ? (
-                            <div className="rounded-lg bg-white/[0.06] px-3 py-3 text-[0.74rem] text-white/55">
-                              暂无评论
-                            </div>
-                          ) : (
-                            <div className="space-y-1.5">
-                              {comments.map((comment) => {
-                                const avatar = comment.user?.avatar_thumb || "";
-                                const replyState = commentReplies[comment.cid];
-                                const replies = replyState?.items || [];
-                                const repliesExpanded = expandedCommentReplyIds.has(comment.cid);
-                                const commentLiked = Number(comment.user_digged || 0) > 0;
-                                const commentDigging = commentDiggingIds.has(comment.cid);
-                                return (
-                                  <div key={comment.cid} className="flex gap-2 rounded-lg px-1.5 py-2 transition-colors hover:bg-white/[0.04]">
-                                    <div className="h-8 w-8 shrink-0 overflow-hidden rounded-full bg-white/[0.08]">
-                                      {avatar ? (
-                                        <img
-                                          src={mediaProxyUrl(avatar, "image")}
-                                          alt={comment.user?.nickname || ""}
-                                          className="h-full w-full object-cover"
-                                        />
-                                      ) : (
-                                        <div className="flex h-full w-full items-center justify-center bg-accent/25 text-[0.72rem] font-bold text-white">
-                                          {(comment.user?.nickname || "?").slice(0, 1)}
-                                        </div>
-                                      )}
-                                    </div>
-                                    <div className="min-w-0 flex-1">
-                                      <div className="flex min-w-0 items-center gap-1.5">
-                                        <span className="truncate text-[0.72rem] font-semibold text-white/72">
-                                          {comment.user?.nickname || "抖音用户"}
-                                        </span>
-                                        <span className="shrink-0 text-[0.62rem] text-white/32">
-                                          {formatCommentTime(comment.create_time)}
-                                        </span>
-                                      </div>
-                                      {comment.text ? (
-                                        <div className="mt-0.5 whitespace-pre-wrap break-words text-[0.76rem] leading-5 text-white/90">
-                                          {comment.text}
-                                        </div>
-                                      ) : comment.sticker_url ? (
-                                        <img
-                                          src={mediaProxyUrl(comment.sticker_url, "image")}
-                                          alt="评论表情"
-                                          className="mt-1 max-h-20 max-w-24 rounded-md object-contain"
-                                        />
-                                      ) : (
-                                        <div className="mt-0.5 text-[0.76rem] leading-5 text-white/62">[表情]</div>
-                                      )}
-                                      <div className="mt-1 flex items-center gap-3 text-[0.62rem] text-white/36">
-                                        {comment.ip_label && <span>IP {comment.ip_label}</span>}
-                                        <button
-                                          type="button"
-                                          disabled={commentDigging}
-                                          onClick={(event) => {
-                                            event.stopPropagation();
-                                            void toggleCommentLike(comment, 1);
-                                          }}
-                                          className={cn(
-                                            "flex items-center gap-1 rounded-md px-1 py-0.5 transition-colors hover:bg-white/[0.06]",
-                                            commentLiked ? "text-red-400" : "text-white/36 hover:text-white/70",
-                                            commentDigging && "cursor-wait opacity-70"
-                                          )}
-                                        >
-                                          <Heart className={cn("h-3 w-3", commentLiked && "fill-current")} />
-                                          <span>{comment.digg_count > 0 ? formatNumber(comment.digg_count) : "赞"}</span>
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={(event) => {
-                                            event.stopPropagation();
-                                            setCommentReplyTarget({
-                                              replyId: comment.cid,
-                                              replyToReplyId: "0",
-                                              nickname: comment.user?.nickname || "抖音用户",
-                                            });
-                                          }}
-                                          className="rounded-md px-1 py-0.5 transition-colors hover:bg-white/[0.06] hover:text-white/70"
-                                        >
-                                          回复
-                                        </button>
-                                        {comment.reply_comment_total > 0 && <span>{formatNumber(comment.reply_comment_total)} 回复</span>}
-                                      </div>
-                                      {comment.reply_comment_total > 0 && (
-                                        <button
-                                          type="button"
-                                          onClick={(event) => {
-                                            event.stopPropagation();
-                                            toggleCommentReplies(comment);
-                                          }}
-                                          className="mt-1.5 flex h-6 items-center rounded-md px-1.5 text-[0.64rem] font-semibold text-white/42 transition-colors hover:bg-white/[0.06] hover:text-white/70"
-                                        >
-                                          {repliesExpanded ? "收起回复" : `展开 ${formatNumber(comment.reply_comment_total)} 条回复`}
-                                        </button>
-                                      )}
-                                      {repliesExpanded && (replies.length > 0 || replyState?.loading || replyState?.error) && (
-                                        <div className="mt-2 space-y-2 border-l border-white/[0.08] pl-2.5">
-                                          {replies.map((reply) => {
-                                            const replyAvatar = reply.user?.avatar_thumb || "";
-                                            const replyLiked = Number(reply.user_digged || 0) > 0;
-                                            const replyDigging = commentDiggingIds.has(reply.cid);
-                                            return (
-                                              <div key={reply.cid} className="flex gap-2">
-                                                <div className="h-6 w-6 shrink-0 overflow-hidden rounded-full bg-white/[0.08]">
-                                                  {replyAvatar ? (
-                                                    <img
-                                                      src={mediaProxyUrl(replyAvatar, "image")}
-                                                      alt={reply.user?.nickname || ""}
-                                                      className="h-full w-full object-cover"
-                                                    />
-                                                  ) : (
-                                                    <div className="flex h-full w-full items-center justify-center bg-white/[0.08] text-[0.58rem] font-bold text-white/70">
-                                                      {(reply.user?.nickname || "?").slice(0, 1)}
-                                                    </div>
-                                                  )}
-                                                </div>
-                                                <div className="min-w-0 flex-1">
-                                                  <div className="flex min-w-0 items-center gap-1.5">
-                                                    <span className="truncate text-[0.68rem] font-semibold text-white/58">
-                                                      {reply.user?.nickname || "抖音用户"}
-                                                    </span>
-                                                    <span className="shrink-0 text-[0.58rem] text-white/28">
-                                                      {formatCommentTime(reply.create_time)}
-                                                    </span>
-                                                  </div>
-                                                  {reply.text ? (
-                                                    <div className="mt-0.5 whitespace-pre-wrap break-words text-[0.7rem] leading-4 text-white/78">
-                                                      {reply.text}
-                                                    </div>
-                                                  ) : reply.sticker_url ? (
-                                                    <img
-                                                      src={mediaProxyUrl(reply.sticker_url, "image")}
-                                                      alt="回复表情"
-                                                      className="mt-1 max-h-16 max-w-20 rounded-md object-contain"
-                                                    />
-                                                  ) : (
-                                                    <div className="mt-0.5 text-[0.7rem] leading-4 text-white/50">[表情]</div>
-                                                  )}
-                                                  <div className="mt-1 flex items-center gap-2 text-[0.58rem] text-white/30">
-                                                    {reply.ip_label && <span>IP {reply.ip_label}</span>}
-                                                    <button
-                                                      type="button"
-                                                      disabled={replyDigging}
-                                                      onClick={(event) => {
-                                                        event.stopPropagation();
-                                                        void toggleCommentLike(reply, 2);
-                                                      }}
-                                                      className={cn(
-                                                        "flex items-center gap-1 rounded-md px-1 py-0.5 transition-colors hover:bg-white/[0.06]",
-                                                        replyLiked ? "text-red-400" : "text-white/30 hover:text-white/62",
-                                                        replyDigging && "cursor-wait opacity-70"
-                                                      )}
-                                                    >
-                                                      <Heart className={cn("h-2.5 w-2.5", replyLiked && "fill-current")} />
-                                                      <span>{reply.digg_count > 0 ? formatNumber(reply.digg_count) : "赞"}</span>
-                                                    </button>
-                                                    <button
-                                                      type="button"
-                                                      onClick={(event) => {
-                                                        event.stopPropagation();
-                                                        setCommentReplyTarget({
-                                                          replyId: comment.cid,
-                                                          replyToReplyId: reply.cid,
-                                                          nickname: reply.user?.nickname || "抖音用户",
-                                                        });
-                                                      }}
-                                                      className="rounded-md px-1 py-0.5 transition-colors hover:bg-white/[0.06] hover:text-white/62"
-                                                    >
-                                                      回复
-                                                    </button>
-                                                  </div>
-                                                </div>
-                                              </div>
-                                            );
-                                          })}
-                                          {replyState?.error && (
-                                            <div className="text-[0.62rem] text-white/42">{replyState.error}</div>
-                                          )}
-                                          {(replyState?.hasMore || replyState?.loading) && (
-                                            <button
-                                              type="button"
-                                              onClick={(event) => {
-                                                event.stopPropagation();
-                                                void loadCommentReplies(comment, "more");
-                                              }}
-                                              disabled={replyState?.loading}
-                                              className="flex h-7 items-center gap-1.5 rounded-md px-2 text-[0.64rem] font-semibold text-white/45 transition-colors hover:bg-white/[0.06] hover:text-white/70 disabled:cursor-wait disabled:opacity-60"
-                                            >
-                                              {replyState?.loading ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                                              {replyState?.loading ? "正在加载回复" : "查看更多回复"}
-                                            </button>
-                                          )}
-                                        </div>
-                                      )}
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                              {(commentsHasMore || commentsLoading) && (
-                                <button
-                                  type="button"
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    void loadComments("more");
-                                  }}
-                                  disabled={commentsLoading}
-                                  className="mt-1 flex h-8 w-full items-center justify-center gap-2 rounded-lg bg-white/[0.06] text-[0.72rem] font-semibold text-white/68 transition-colors hover:bg-white/[0.1] disabled:cursor-wait disabled:opacity-60"
-                                >
-                                  {commentsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                                  {commentsLoading ? "正在加载" : "加载更多"}
-                                </button>
-                              )}
-                              {commentsError && (
-                                <div className="rounded-lg bg-white/[0.06] px-2 py-2 text-[0.68rem] text-white/55">
-                                  {commentsError}
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                        <div className="shrink-0 border-t border-white/[0.08] p-2">
-                          {commentReplyTarget && (
-                            <div className="mb-1.5 flex items-center gap-2 rounded-lg bg-white/[0.05] px-2 py-1 text-[0.64rem] text-white/48">
-                              <span className="min-w-0 flex-1 truncate">回复 {commentReplyTarget.nickname}</span>
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  setCommentReplyTarget(null);
-                                }}
-                                className="rounded px-1 text-white/45 transition-colors hover:bg-white/[0.08] hover:text-white/80"
-                              >
-                                取消
-                              </button>
-                            </div>
-                          )}
-                          <div className="flex items-end gap-2">
-                            <textarea
-                              value={commentDraft}
-                              onChange={(event) => setCommentDraft(event.target.value)}
-                              onKeyDown={(event) => {
-                                if (event.key === "Enter" && !event.shiftKey) {
-                                  event.preventDefault();
-                                  void submitComment();
-                                }
-                              }}
-                              placeholder={commentReplyTarget ? `回复 ${commentReplyTarget.nickname}` : "写评论..."}
-                              rows={1}
-                              className="share-friends-scroll min-h-9 max-h-20 flex-1 resize-none rounded-lg border border-white/[0.08] bg-white/[0.06] px-2.5 py-2 text-[0.74rem] leading-5 text-white outline-none placeholder:text-white/30 focus:border-white/18"
-                            />
-                            <button
-                              type="button"
-                              disabled={!commentDraft.trim() || commentSubmitting}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void submitComment();
-                              }}
-                              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent text-white transition-colors hover:bg-accent/90 disabled:cursor-not-allowed disabled:bg-white/[0.08] disabled:text-white/30"
-                            >
-                              {commentSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                            </button>
-                          </div>
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-
-                <div
-                  className="relative shrink-0"
-                  onPointerEnter={(event) => openPanelOnPointerEnter("share", event)}
-                  onPointerLeave={(event) => closePanelOnPointerLeave("share", event)}
-                  onMouseEnter={() => openToolPanel("share")}
-                  onMouseLeave={() => schedulePanelClose("share")}
-                >
-                  <PlayerIconButton
-                    label="分享"
-                    onClick={(event) => togglePanel("share", event)}
-                    onPointerDown={(event) => openPanelOnPointerDown("share", event)}
-                    active={openPanel === "share"}
-                  >
-                    <Share2 className="h-4 w-4" />
-                  </PlayerIconButton>
-                  <AnimatePresence>
-                    {openPanel === "share" && (
-                      <motion.div
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: 6 }}
-                        transition={{ duration: 0.16 }}
-                        className="absolute bottom-9 right-0 z-40 w-[268px] overflow-hidden rounded-xl bg-[#141414]/95 shadow-[0_4px_16px_rgba(0,0,0,0.4)] backdrop-blur-xl"
-                        onPointerEnter={(event) => openPanelOnPointerEnter("share", event)}
-                        onPointerLeave={(event) => closePanelOnPointerLeave("share", event)}
-                        onMouseEnter={() => openToolPanel("share")}
-                        onMouseLeave={() => schedulePanelClose("share")}
-                        onClick={(event) => event.stopPropagation()}
-                        onWheel={(event) => event.stopPropagation()}
-                      >
-                        <div className="border-b border-white/[0.08] px-3 py-2">
-                          <div className="text-[0.74rem] font-semibold text-white/85">分享给好友</div>
-                          <div className="mt-0.5 text-[0.66rem] text-white/42">点击好友即可发送</div>
-                        </div>
-                        <div className="share-friends-scroll max-h-[320px] overflow-y-auto p-1.5">
-                          {shareFriendsLoading ? (
-                            <div className="flex h-20 items-center justify-center gap-2 text-[0.72rem] text-white/60">
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              正在获取好友
-                            </div>
-                          ) : shareFriendsError ? (
-                            <div className="rounded-md bg-white/[0.06] px-2 py-2 text-[0.72rem] leading-5 text-white/60">
-                              {shareFriendsError}
-                            </div>
-                          ) : shareFriends.length === 0 ? (
-                            <div className="rounded-md bg-white/[0.06] px-2 py-2 text-[0.72rem] text-white/55">
-                              暂无可分享好友
-                            </div>
-                          ) : (
-                            shareFriends.slice(0, 20).map((friend) => {
-                              const avatar = friend.avatar_thumb || friend.avatar_medium;
-                              const subtitle = friend.unique_id || friend.short_id || friend.uid;
-                              const friendKey = friend.sec_uid || friend.uid;
-                              const sending = shareSendingFriendKey === friendKey;
-                              const sent = shareSentFriendKeys.has(friendKey);
-                              return (
-                                <button
-                                  key={friendKey}
-                                  type="button"
-                                  onClick={(event) => handleShareFriendClick(friend, event)}
-                                  disabled={Boolean(shareSendingFriendKey)}
-                                  className="flex h-11 w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left transition-colors hover:bg-white/[0.08] disabled:cursor-default disabled:opacity-70"
-                                >
-                                  <div className="h-8 w-8 shrink-0 overflow-hidden rounded-full bg-white/[0.08]">
-                                    {avatar ? (
-                                      <img
-                                        src={mediaProxyUrl(avatar, "image")}
-                                        alt={friend.nickname}
-                                        className="h-full w-full object-cover"
-                                      />
-                                    ) : (
-                                      <div className="flex h-full w-full items-center justify-center bg-accent/30 text-[0.72rem] font-bold text-white">
-                                        {friend.nickname.slice(0, 1)}
-                                      </div>
-                                    )}
-                                  </div>
-                                  <div className="min-w-0 flex-1">
-                                    <div className="truncate text-[0.78rem] font-semibold text-white/90">
-                                      {friend.nickname}
-                                    </div>
-                                    {subtitle && (
-                                      <div className="truncate text-[0.66rem] text-white/42">
-                                        {subtitle}
-                                      </div>
-                                    )}
-                                  </div>
-                                  {sending ? (
-                                    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-white/60" />
-                                  ) : sent ? (
-                                    <Check className="h-3.5 w-3.5 shrink-0 text-accent" />
-                                  ) : friend.is_recent_share && (
-                                    <span className="shrink-0 rounded-full bg-accent/18 px-1.5 py-0.5 text-[0.62rem] font-semibold text-accent">
-                                      最近
-                                    </span>
-                                  )}
-                                </button>
-                              );
-                            })
-                          )}
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-
-                <div
-                  className="relative shrink-0"
-                  onPointerEnter={(event) => openPanelOnPointerEnter("download", event)}
-                  onPointerLeave={(event) => closePanelOnPointerLeave("download", event)}
-                  onMouseEnter={() => openToolPanel("download")}
-                  onMouseLeave={() => schedulePanelClose("download")}
-                >
-                  <PlayerIconButton
-                    label={downloadSubmitting ? "正在加入下载" : "下载作品"}
-                    onClick={handleDownloadCurrent}
-                    active={openPanel === "download" || downloadSubmitting}
-                    disabled={!onDownload || downloadSubmitting}
-                  >
-                    {downloadSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                  </PlayerIconButton>
-                  <AnimatePresence>
-                    {openPanel === "download" && (
-                      <motion.div
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: 6 }}
-                        transition={{ duration: 0.16 }}
-                        className="absolute bottom-9 right-0 z-40 w-[160px] rounded-xl bg-[#141414]/95 p-1.5 shadow-[0_4px_16px_rgba(0,0,0,0.4)] backdrop-blur-xl"
-                        onPointerEnter={(event) => openPanelOnPointerEnter("download", event)}
-                        onPointerLeave={(event) => closePanelOnPointerLeave("download", event)}
-                        onMouseEnter={() => openToolPanel("download")}
-                        onMouseLeave={() => schedulePanelClose("download")}
-                        onClick={(event) => event.stopPropagation()}
-                        onWheel={(event) => event.stopPropagation()}
-                      >
-                        <div className="flex flex-col gap-1">
-                          <button
-                            type="button"
-                            disabled={!onDownload || downloadSubmitting}
-                            onClick={handleDownloadCurrent}
-                            className="flex h-8 items-center justify-center gap-1 rounded-md bg-accent/18 text-[0.72rem] font-semibold text-accent transition-colors hover:bg-accent/25 disabled:cursor-not-allowed disabled:opacity-45"
-                          >
-                            {downloadSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                            {downloadSubmitting ? "正在加入" : "下载作品"}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={copyCurrentMediaUrl}
-                            className="flex h-8 items-center justify-center rounded-md bg-white/[0.08] text-[0.72rem] font-semibold text-white/80 transition-colors hover:bg-white/15 hover:text-white"
-                          >
-                            复制播放地址
-                          </button>
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-
-                <div
-                  className="relative shrink-0"
-                  onPointerEnter={(event) => openPanelOnPointerEnter("music", event)}
-                  onPointerLeave={(event) => closePanelOnPointerLeave("music", event)}
-                  onMouseEnter={() => openToolPanel("music")}
-                  onMouseLeave={() => schedulePanelClose("music")}
-                >
-                  <PlayerIconButton
-                    label="背景音乐"
-                    onClick={(event) => togglePanel("music", event)}
-                    onPointerDown={(event) => openPanelOnPointerDown("music", event)}
-                    active={openPanel === "music"}
-                  >
-                    <Music className="h-4 w-4" />
-                  </PlayerIconButton>
-                  <AnimatePresence>
-                    {openPanel === "music" && (
-                      <motion.div
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: 6 }}
-                        transition={{ duration: 0.16 }}
-                        className="absolute bottom-9 right-0 z-40 w-[160px] rounded-xl bg-[#141414]/95 p-1.5 shadow-[0_4px_16px_rgba(0,0,0,0.4)] backdrop-blur-xl"
-                        onPointerEnter={(event) => openPanelOnPointerEnter("music", event)}
-                        onPointerLeave={(event) => closePanelOnPointerLeave("music", event)}
-                        onMouseEnter={() => openToolPanel("music")}
-                        onMouseLeave={() => schedulePanelClose("music")}
-                        onClick={(event) => event.stopPropagation()}
-                        onWheel={(event) => event.stopPropagation()}
-                      >
-                        {musicUrl ? (
-                          <div className="flex flex-col gap-1">
-                            <button
-                              type="button"
-                              onClick={toggleBgm}
-                              className="flex h-8 items-center justify-center gap-1 rounded-md bg-accent/18 text-[0.72rem] font-semibold text-accent transition-colors hover:bg-accent/25"
-                            >
-                              {bgmPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5 fill-current" />}
-                              {bgmPlaying ? "暂停 BGM" : "播放 BGM"}
-                            </button>
-                            <a
-                              href={bgmProxyUrl}
-                              download
-                              className="flex h-8 items-center justify-center gap-1 rounded-md bg-white/[0.08] text-[0.72rem] font-semibold text-white/80 transition-colors hover:bg-white/15 hover:text-white"
-                              onClick={(event) => event.stopPropagation()}
-                            >
-                              <Download className="h-3.5 w-3.5" />
-                              下载
-                            </a>
-                          </div>
-                        ) : (
-                          <div className="rounded-md bg-white/[0.06] px-2 py-2 text-[0.72rem] text-white/55">
-                            当前作品没有返回音频地址
-                          </div>
-                        )}
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-
-                {onShowDetail && (
-                  <PlayerIconButton
-                    label="查看详情"
-	                    onClick={(event) => {
-	                      event.stopPropagation();
-	                      releasePlayerMediaResources();
-	                      onShowDetail(currentVideo);
-	                    }}
-                  >
-                    <Info className="h-4 w-4" />
-                  </PlayerIconButton>
-                )}
-              </div>
+              <PlayerActionButtons
+                liked={liked}
+                favorited={favorited}
+                likeCount={likeCount}
+                favoriteCount={favoriteCount}
+                relationSubmitting={relationSubmitting}
+                openPanel={openPanel}
+                muted={muted}
+                volume={volume}
+                effectiveVolume={effectiveVolume}
+                playbackRate={playbackRate}
+                qualityOptions={qualityOptions}
+                activeQualityOption={activeQualityOption}
+                showQualityControl={showQualityControl}
+                shareFriends={shareFriends}
+                shareFriendsLoading={shareFriendsLoading}
+                shareFriendsError={shareFriendsError}
+                shareSendingFriendKey={shareSendingFriendKey}
+                shareSentFriendKeys={shareSentFriendKeys}
+                downloadSubmitting={downloadSubmitting}
+                musicUrl={musicUrl}
+                bgmPlaying={bgmPlaying}
+                bgmProxyUrl={bgmProxyUrl}
+                hasDownloadHandler={Boolean(onDownload)}
+                commentsOpen={commentsOpen}
+                comments={comments}
+                commentsLoading={commentsLoading}
+                commentsError={commentsError}
+                commentsHasMore={commentsHasMore}
+                commentsTotal={commentsTotal}
+                commentReplies={commentReplies}
+                expandedCommentReplyIds={expandedCommentReplyIds}
+                commentDiggingIds={commentDiggingIds}
+                commentDraft={commentDraft}
+                commentSubmitting={commentSubmitting}
+                commentReplyTarget={commentReplyTarget}
+                currentVideoCommentCount={currentVideo?.statistics?.comment_count || 0}
+                onToggleLike={(event) => {
+                  event.stopPropagation();
+                  void toggleLike();
+                }}
+                onToggleCollect={(event) => {
+                  event.stopPropagation();
+                  void toggleCollect();
+                }}
+                onToggleMute={toggleMute}
+                onVolumeChange={handleVolumeChange}
+                onPlaybackRateChange={handlePlaybackRateChange}
+                onQualityChange={handleQualityChange}
+                onShareFriendClick={handleShareFriendClick}
+                onDownloadCurrent={handleDownloadCurrent}
+                onCopyCurrentMediaUrl={copyCurrentMediaUrl}
+                onToggleBgm={toggleBgm}
+                onShowDetail={() => {
+                  releasePlayerMediaResources();
+                  onShowDetail?.(currentVideo);
+                }}
+                onTogglePanel={togglePanel}
+                onOpenPanelOnPointerEnter={openPanelOnPointerEnter}
+                onClosePanelOnPointerLeave={closePanelOnPointerLeave}
+                onOpenToolPanel={openToolPanel}
+                onSchedulePanelClose={schedulePanelClose}
+                onOpenPanelOnPointerDown={openPanelOnPointerDown}
+                onCommentsScroll={handleCommentsScroll}
+                onToggleCommentReplies={toggleCommentReplies}
+                onToggleCommentLike={toggleCommentLike}
+                onSetCommentReplyTarget={setCommentReplyTarget}
+                onCommentDraftChange={setCommentDraft}
+                onSubmitComment={submitComment}
+                onLoadCommentReplies={loadCommentReplies}
+                onLoadMoreComments={() => void loadComments("more")}
+                onCloseCommentsPanel={closeCommentsPanel}
+                onOpenCommentsPanel={openCommentsPanel}
+                onMarkCommentsPanelSticky={markCommentsPanelSticky}
+                onScheduleTransientCommentsClose={scheduleTransientCommentsClose}
+                onClearPanelCloseTimer={clearPanelCloseTimer}
+              />
             </div>
 
             <div className="mt-0.5">
