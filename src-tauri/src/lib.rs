@@ -14,8 +14,9 @@ pub mod friend_chat;
 pub mod login_window;
 pub mod system_open;
 pub mod update;
+pub mod commands;
 
-use api::{BitRateInfo, CookieStatus, DouyinClient, DownloadHistory, UserInfo, VideoInfo};
+use api::{BitRateInfo, CookieStatus, DouyinClient, UserInfo, VideoInfo};
 use config::{AppConfig, RelationSignerConfig};
 use cookie::{
     has_douyin_login_cookie, has_douyin_session_cookie, parse_cookie_string,
@@ -29,7 +30,6 @@ use history::HistoryManager;
 use media_utils::*;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -50,13 +50,7 @@ use friend_chat::{
     coerce_i64, friend_chat_state_path, json_object_with_success,
     sanitize_friend_chat_state, sanitize_sec_user_ids,
 };
-use download_files::{build_download_file_index, download_file_matches_query, DownloadFileEntry, DownloadFileIndexCache, DOWNLOAD_FILE_INDEX_TTL};
-use update::{is_windows_portable_runtime, update_content_length, updater_install_mode};
-use system_open::{
-    canonical_existing_directory, canonical_existing_file,
-    open_directory_with_system, open_external_url_with_system,
-    open_file_with_system, reveal_file_with_system, write_text_to_clipboard,
-};
+use download_files::DownloadFileIndexCache;
 
 
 
@@ -3757,415 +3751,30 @@ async fn resume_download(
 
 // ==================== 下载历史 API ====================
 
-/// 获取下载历史
-#[tauri::command]
-async fn get_history(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let history = HistoryManager::load();
-    *state.history.lock().await = history;
-    let history = state.history.lock().await;
-    let items = history.get_all();
-    Ok(serde_json::json!({
-        "success": true,
-        "items": items
-    }))
-}
 
 
-#[tauri::command]
-async fn list_download_files(
-    state: State<'_, AppState>,
-    offset: Option<usize>,
-    limit: Option<usize>,
-    force_refresh: Option<bool>,
-    query: Option<String>,
-    media_type: Option<String>,
-    sort_by: Option<String>,
-) -> Result<serde_json::Value, String> {
-    let target = configured_download_directory(&state).await?;
-    let use_cache = !force_refresh.unwrap_or(false);
-    let cached_index = if use_cache {
-        state.download_file_index.lock().await.clone()
-    } else {
-        None
-    };
-
-    let index = if let Some(cache) = cached_index {
-        if cache.directory == target && cache.scanned_at.elapsed() <= DOWNLOAD_FILE_INDEX_TTL {
-            cache
-        } else {
-            build_download_file_index(target, state.download_file_index.clone()).await?
-        }
-    } else {
-        build_download_file_index(target, state.download_file_index.clone()).await?
-    };
-
-    let query = query.unwrap_or_default().trim().to_lowercase();
-    let media_type = media_type
-        .unwrap_or_else(|| "all".to_string())
-        .trim()
-        .to_lowercase();
-    let sort_by = sort_by.unwrap_or_else(|| "date_desc".to_string());
-
-    let mut filtered_items: Vec<DownloadFileEntry> = index
-        .items
-        .into_iter()
-        .filter(|item| {
-            download_file_matches_query(item, &query)
-                && (media_type == "all" || item.media_type.to_lowercase() == media_type)
-        })
-        .collect();
-
-    match sort_by.as_str() {
-        "date_asc" => filtered_items.sort_by_key(|item| item.timestamp),
-        "size_desc" => filtered_items.sort_by_key(|item| std::cmp::Reverse(item.size)),
-        "size_asc" => filtered_items.sort_by_key(|item| item.size),
-        _ => filtered_items.sort_by_key(|item| std::cmp::Reverse(item.timestamp)),
-    }
-
-    let total = filtered_items.len();
-    let total_size = filtered_items.iter().map(|item| item.size).sum::<u64>();
-    let latest = filtered_items.first().cloned();
-    let items = match (offset, limit) {
-        (Some(offset), Some(limit)) => filtered_items
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .collect(),
-        (Some(offset), None) => filtered_items.into_iter().skip(offset).collect(),
-        (None, Some(limit)) => filtered_items.into_iter().take(limit).collect(),
-        (None, None) => filtered_items,
-    };
-
-    Ok(serde_json::json!({
-        "success": true,
-        "items": items,
-        "total": total,
-        "total_size": total_size,
-        "latest": latest
-    }))
-}
 
 
-/// 清空下载历史
-#[tauri::command]
-async fn clear_history(state: State<'_, AppState>) -> Result<(), String> {
-    let mut history = state.history.lock().await;
-    history.clear().map_err(|e| e.to_string())
-}
 
-/// 删除历史记录
-#[tauri::command]
-async fn delete_history(state: State<'_, AppState>, aweme_id: String) -> Result<(), String> {
-    let mut history = state.history.lock().await;
-    history.delete(&aweme_id).map_err(|e| e.to_string())
-}
 
-/// 添加历史记录
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-async fn add_history(
-    state: State<'_, AppState>,
-    aweme_id: String,
-    title: String,
-    author: String,
-    author_id: String,
-    cover: String,
-    file_path: String,
-    media_type: String,
-    file_size: u64,
-) -> Result<(), String> {
-    let mut history = state.history.lock().await;
-    history
-        .add(DownloadHistory {
-            aweme_id,
-            title,
-            author,
-            author_id,
-            cover,
-            file_path,
-            media_type,
-            file_size,
-            create_time: chrono::Utc::now().timestamp(),
-        })
-        .map_err(|e| e.to_string())
-}
 
 // ==================== 文件操作 API ====================
 
 
-async fn allowed_existing_file_path(
-    state: &State<'_, AppState>,
-    raw_path: &str,
-) -> Result<PathBuf, String> {
-    let target = canonical_existing_file(raw_path)?;
-
-    let download_path = {
-        let config = state.config.lock().await;
-        config.download_path.clone()
-    };
-
-    if !download_path.trim().is_empty() {
-        if let Ok(download_root) = Path::new(&download_path).canonicalize() {
-            if target.starts_with(download_root) {
-                return Ok(target);
-            }
-        }
-    }
-
-    let history_items = {
-        let history = state.history.lock().await;
-        history.get_all()
-    };
-
-    let is_history_file = history_items.iter().any(|item| {
-        Path::new(&item.file_path)
-            .canonicalize()
-            .map(|history_path| history_path == target)
-            .unwrap_or(false)
-    });
-
-    if is_history_file {
-        Ok(target)
-    } else {
-        Err("仅允许操作下载目录或下载历史中的文件".to_string())
-    }
-}
-
-async fn configured_download_directory(state: &State<'_, AppState>) -> Result<PathBuf, String> {
-    let download_path = {
-        let config = state.config.lock().await;
-        config.download_path.clone()
-    };
-
-    let trimmed = download_path.trim();
-    if trimmed.is_empty() {
-        return Err("下载目录未设置".to_string());
-    }
-
-    std::fs::create_dir_all(trimmed).map_err(|e| format!("创建下载目录失败: {e}"))?;
-    canonical_existing_directory(trimmed)
-}
-
-async fn allowed_existing_download_directory_path(
-    state: &State<'_, AppState>,
-    raw_path: &str,
-) -> Result<PathBuf, String> {
-    let target = canonical_existing_directory(raw_path)?;
-    let download_root = configured_download_directory(state).await?;
-
-    if target.starts_with(download_root) {
-        Ok(target)
-    } else {
-        Err("仅允许打开下载目录下的文件夹".to_string())
-    }
-}
 
 
-/// 写入系统剪贴板
-#[tauri::command]
-async fn copy_text_to_clipboard(text: String) -> Result<(), String> {
-    if text.is_empty() {
-        return Err("复制内容不能为空".to_string());
-    }
-    write_text_to_clipboard(&text)
-}
-
-/// 打开文件
-#[tauri::command]
-async fn open_file(state: State<'_, AppState>, path: String) -> Result<(), String> {
-    let target = allowed_existing_file_path(&state, &path).await?;
-    open_file_with_system(&target)
-}
-
-/// 打开下载目录
-#[tauri::command]
-async fn open_download_directory(state: State<'_, AppState>) -> Result<(), String> {
-    let target = configured_download_directory(&state).await?;
-    open_directory_with_system(&target)
-}
-
-/// 打开文件所在目录
-#[tauri::command]
-async fn open_file_location(state: State<'_, AppState>, path: String) -> Result<(), String> {
-    let canonical = Path::new(path.trim())
-        .canonicalize()
-        .map_err(|_| "文件或目录不存在或无法访问".to_string())?;
-
-    if canonical.is_dir() {
-        let target = allowed_existing_download_directory_path(&state, &path).await?;
-        return open_directory_with_system(&target);
-    }
-
-    let target = allowed_existing_file_path(&state, &path).await?;
-    reveal_file_with_system(&target)
-}
-
-/// 打开外部链接
-#[tauri::command]
-async fn open_external_url(url: String) -> Result<(), String> {
-    let target = url.trim();
-    if target.is_empty() {
-        return Err("链接不能为空".to_string());
-    }
-    open_external_url_with_system(target)
-}
-
-/// 删除文件
-#[tauri::command]
-async fn delete_file(state: State<'_, AppState>, path: String) -> Result<(), String> {
-    let target = allowed_existing_file_path(&state, &path).await?;
-    std::fs::remove_file(target).map_err(|e| e.to_string())?;
-    *state.download_file_index.lock().await = None;
-    Ok(())
-}
-
-/// 获取应用版本号
-#[tauri::command]
-fn get_app_version(app_handle: tauri::AppHandle) -> String {
-    app_handle.package_info().version.to_string()
-}
-
-/// 重启应用
-#[tauri::command]
-fn restart_app(app_handle: tauri::AppHandle) {
-    app_handle.request_restart();
-}
 
 
-/// 检查更新
-#[tauri::command]
-async fn check_update(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    use tauri_plugin_updater::UpdaterExt;
 
-    let portable = is_windows_portable_runtime();
-    let mut updater_builder = app_handle.updater_builder();
-    if portable {
-        updater_builder = updater_builder.target("windows-x86_64-portable");
-    }
 
-    let updater = updater_builder.build().map_err(|e| e.to_string())?;
 
-    match updater.check().await {
-        Ok(Some(update)) => {
-            let asset_size = update_content_length(&update.download_url).await;
-            Ok(serde_json::json!({
-                "success": true,
-                "has_update": true,
-                "version": update.version.clone(),
-                "current_version": update.current_version.clone(),
-                "notes": update.body.unwrap_or_else(|| "无更新说明".to_string()),
-                "date": update.date.map(|d| d.to_string()),
-                "download_url": update.download_url.to_string(),
-                "asset_size": asset_size,
-                "portable": portable,
-                "install_mode": updater_install_mode()
-            }))
-        },
-        Ok(None) => Ok(serde_json::json!({
-            "success": true,
-            "has_update": false,
-            "portable": portable,
-            "install_mode": updater_install_mode()
-        })),
-        Err(e) => Ok(serde_json::json!({
-            "success": false,
-            "portable": portable,
-            "install_mode": updater_install_mode(),
-            "message": format!("检查更新失败: {}", e)
-        })),
-    }
-}
 
-/// 下载并安装更新
-#[tauri::command]
-async fn download_update(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    use tauri_plugin_updater::UpdaterExt;
 
-    let portable = is_windows_portable_runtime();
-    let mut updater_builder = app_handle.updater_builder();
-    if portable {
-        updater_builder = updater_builder.target("windows-x86_64-portable");
-    }
 
-    let updater = updater_builder.build().map_err(|e| e.to_string())?;
 
-    match updater.check().await {
-        Ok(Some(update)) => {
-            #[cfg(windows)]
-            if portable {
-                return download_portable_update(app_handle, update).await;
-            } else {
-                return download_nsis_update(app_handle, update).await;
-            }
 
-            let progress_app = app_handle.clone();
-            let finished_app = app_handle.clone();
-            let mut downloaded = 0u64;
-            let started_at = std::time::Instant::now();
 
-            match update
-                .download_and_install(
-                    move |chunk_len, content_len| {
-                        downloaded += chunk_len as u64;
-                        let elapsed = started_at.elapsed().as_secs_f64().max(0.001);
-                        let speed_bps = (downloaded as f64 / elapsed) as u64;
-                        let progress = content_len
-                            .filter(|total| *total > 0)
-                            .map(|total| downloaded as f64 / total as f64 * 100.0);
-                        let _ = progress_app.emit(
-                            "update-download-progress",
-                            serde_json::json!({
-                                "downloaded": downloaded,
-                                "total": content_len,
-                                "progress": progress,
-                                "speed_bps": speed_bps
-                            }),
-                        );
-                    },
-                    move || {
-                        let _ = finished_app.emit(
-                            "update-download-finished",
-                            serde_json::json!({
-                                "success": true,
-                                "restart_required": true,
-                                "message": "更新安装完成，重启后使用新版本"
-                            }),
-                        );
-                    },
-                )
-                .await
-            {
-                Ok(_) => Ok(serde_json::json!({
-                    "success": true,
-                    "restart_required": true,
-                    "message": "更新安装完成，重启后使用新版本"
-                })),
-                Err(e) => {
-                    log::error!("failed to download and install update: {}", e);
-                    let _ = app_handle.emit(
-                        "update-download-error",
-                        serde_json::json!({
-                            "success": false,
-                            "message": e.to_string()
-                        }),
-                    );
-                    Ok(serde_json::json!({
-                        "success": false,
-                        "message": format!("下载更新失败: {}", e)
-                    }))
-                }
-            }
-        }
-        Ok(None) => Ok(serde_json::json!({
-            "success": false,
-            "message": "没有可用更新"
-        })),
-        Err(e) => Ok(serde_json::json!({
-            "success": false,
-            "message": format!("下载更新失败: {}", e)
-        })),
-    }
-}
+
 
 // ============================================================================
 // 应用入口
@@ -4221,10 +3830,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            get_app_version,
-            restart_app,
-            check_update,
-            download_update,
+            commands::update_cmd::get_app_version,
+            commands::update_cmd::restart_app,
+            commands::update_cmd::check_update,
+            commands::update_cmd::download_update,
             init_client,
             get_config,
             save_config,
@@ -4273,17 +3882,17 @@ pub fn run() {
             remove_download_task,
             pause_download,
             resume_download,
-            list_download_files,
-            get_history,
-            clear_history,
-            delete_history,
-            add_history,
-            open_file,
-            open_download_directory,
-            open_file_location,
-            open_external_url,
-            delete_file,
-            copy_text_to_clipboard,
+            commands::download_files_cmd::list_download_files,
+            commands::history::get_history,
+            commands::history::clear_history,
+            commands::history::delete_history,
+            commands::history::add_history,
+            commands::system::open_file,
+            commands::system::open_download_directory,
+            commands::system::open_file_location,
+            commands::system::open_external_url,
+            commands::system::delete_file,
+            commands::system::copy_text_to_clipboard,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
