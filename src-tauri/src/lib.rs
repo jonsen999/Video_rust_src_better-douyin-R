@@ -16,14 +16,14 @@ pub mod system_open;
 pub mod update;
 pub mod commands;
 
-use api::{BitRateInfo, CookieStatus, DouyinClient, UserInfo, VideoInfo};
+use api::{BitRateInfo, DouyinClient, VideoInfo};
 use config::{AppConfig, RelationSignerConfig};
 use cookie::{
     has_douyin_login_cookie, has_douyin_session_cookie, parse_cookie_string,
     serialize_cookie_string, verify_douyin_login_cookie, CookieLoginSession,
 };
 use downloader::{
-    available_video_quality_height, video_quality_candidate_count, Downloader, DownloaderEvent,
+    available_video_quality_height, video_quality_candidate_count, Downloader,
 };
 use futures::StreamExt;
 use history::HistoryManager;
@@ -34,13 +34,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager, State};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use url::Url;
 
 use login_window::{
-    clear_douyin_login_cookies, close_stale_cookie_login_windows,
+    close_stale_cookie_login_windows,
     extract_relation_signer_cookie, inject_relation_signer_probe,
     is_login_cookie_candidate, reset_douyin_login_window_state,
     schedule_douyin_login_storage_cleanup, schedule_remove_login_data_dir,
@@ -357,7 +357,7 @@ fn prefixed_error_message(prefix: &str, message: &str) -> String {
     }
 }
 
-async fn get_client(state: &State<'_, AppState>) -> Result<DouyinClient, String> {
+pub(crate) async fn get_client(state: &State<'_, AppState>) -> Result<DouyinClient, String> {
     state
         .client
         .lock()
@@ -580,168 +580,6 @@ async fn clear_cookie_login_session_if_current(
 // ============================================================================
 // Tauri Commands
 // ============================================================================
-
-/// 初始化客户端
-#[tauri::command]
-async fn init_client(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let config = state.config.lock().await.clone();
-
-    let client = DouyinClient::new(config.clone()).map_err(|e| e.to_string())?;
-
-    let (tx, mut rx) = mpsc::channel::<DownloaderEvent>(100);
-
-    let downloader = Downloader::new(config, Some(tx)).map_err(|e| e.to_string())?;
-
-    let app_handle = state.app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            let current_app_handle = app_handle.lock().await.clone();
-            if let Some(app_handle) = current_app_handle {
-                let _ = app_handle.emit(event.name, event.payload);
-            }
-        }
-    });
-
-    *state.client.lock().await = Some(client);
-    *state.downloader.lock().await = Some(downloader);
-
-    Ok(serde_json::json!({ "success": true }))
-}
-
-// ==================== 配置 API ====================
-
-/// 获取配置
-#[tauri::command]
-async fn get_config(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let config = state.config.lock().await.clone();
-    let cookie_set = !config.cookie.trim().is_empty();
-    let mut value = serde_json::to_value(&config).unwrap_or_else(|_| serde_json::json!({}));
-    if let Some(object) = value.as_object_mut() {
-        object.insert("cookie".to_string(), serde_json::json!(""));
-        object.insert("cookie_set".to_string(), serde_json::json!(cookie_set));
-    }
-    Ok(value)
-}
-
-/// 保存配置
-#[tauri::command]
-async fn save_config(
-    state: State<'_, AppState>,
-    config: AppConfig,
-) -> Result<serde_json::Value, String> {
-    let mut next_config = config;
-    let current_config = state.config.lock().await.clone();
-    if next_config.cookie.trim().is_empty() && !current_config.cookie.trim().is_empty() {
-        next_config.cookie = current_config.cookie.clone();
-    }
-    let client_needs_rebuild =
-        next_config.cookie != current_config.cookie || next_config.proxy != current_config.proxy;
-
-    match next_config.save() {
-        Ok(_) => {
-            next_config.download_quality =
-                AppConfig::normalize_download_quality(&next_config.download_quality);
-            *state.config.lock().await = next_config.clone();
-
-            if client_needs_rebuild {
-                let mut client_guard = state.client.lock().await;
-                if client_guard.is_some() {
-                    match DouyinClient::new(next_config.clone()) {
-                        Ok(client) => *client_guard = Some(client),
-                        Err(error) => {
-                            log::warn!(
-                                "Failed to rebuild API client after config update: {}",
-                                error
-                            );
-                        }
-                    }
-                }
-            }
-
-            if let Some(downloader) = state.downloader.lock().await.as_mut() {
-                if let Err(error) = downloader.update_config(next_config) {
-                    log::warn!(
-                        "Failed to update downloader config after config save: {}",
-                        error
-                    );
-                }
-            }
-
-            Ok(serde_json::json!({ "success": true, "message": "配置保存成功" }))
-        }
-        Err(e) => {
-            Ok(serde_json::json!({ "success": false, "message": format!("保存失败: {}", e) }))
-        }
-    }
-}
-
-#[tauri::command]
-async fn logout_cookie(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
-    if let Some(session) = state.cookie_login.lock().await.take() {
-        session.cancelled.store(true, Ordering::SeqCst);
-        if let Some(window) = app.get_webview_window(&session.label) {
-            let _ = window.clear_all_browsing_data();
-            let _ = window.close();
-        }
-        schedule_remove_login_data_dir(session.data_dir);
-    }
-    close_stale_cookie_login_windows(&app);
-
-    for (_, window) in app.webview_windows() {
-        clear_douyin_login_cookies(&window);
-    }
-
-    let mut next_config = state.config.lock().await.clone();
-    next_config.cookie.clear();
-    next_config.relation_signer = None;
-    next_config.im_friend_sec_user_ids.clear();
-
-    match next_config.save() {
-        Ok(_) => {
-            *state.config.lock().await = next_config.clone();
-            *state.client.lock().await = None;
-            if let Some(downloader) = state.downloader.lock().await.as_mut() {
-                if let Err(error) = downloader.update_config(next_config) {
-                    log::warn!(
-                        "Failed to update downloader config after cookie logout: {}",
-                        error
-                    );
-                }
-            }
-            Ok(serde_json::json!({
-                "success": true,
-                "message": "已退出登录"
-            }))
-        }
-        Err(error) => Ok(serde_json::json!({
-            "success": false,
-            "message": format!("退出登录失败: {}", error)
-        })),
-    }
-}
-
-/// 选择目录
-#[tauri::command]
-async fn select_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    use tauri_plugin_dialog::DialogExt;
-
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    app.dialog().file().pick_folder(move |folder| {
-        let _ = tx.send(folder.map(|path| path.to_string()));
-    });
-
-    rx.await.map_err(|_| "选择目录对话框未返回结果".to_string())
-}
-
-/// 验证 Cookie (简化版)
-#[tauri::command]
-#[allow(dead_code)]
-async fn verify_cookie_simple(cookie: String) -> Result<bool, String> {
-    Ok(cookie.contains("sessionid"))
-}
 
 #[tauri::command]
 async fn open_verify_browser(
@@ -2845,37 +2683,6 @@ async fn publish_comment(
 
 // ==================== Cookie API ====================
 
-/// 验证 Cookie
-#[tauri::command]
-async fn verify_cookie(state: State<'_, AppState>) -> Result<CookieStatus, String> {
-    let client = match get_client(&state).await {
-        Ok(client) => client,
-        Err(_) => {
-            return Ok(CookieStatus {
-                valid: false,
-                user_name: None,
-                user_id: None,
-                sec_uid: None,
-                avatar_thumb: None,
-                avatar_medium: None,
-                avatar_larger: None,
-                expires_at: None,
-                message: "未配置 Cookie".to_string(),
-            });
-        }
-    };
-
-    client.verify_cookie().await.map_err(|e| e.to_string())
-}
-
-/// 获取当前用户信息
-#[tauri::command]
-async fn get_current_user(state: State<'_, AppState>) -> Result<UserInfo, String> {
-    let client = get_client(&state).await?;
-
-    client.get_current_user().await.map_err(|e| e.to_string())
-}
-
 // ==================== 下载 API ====================
 
 fn video_info_has_download_candidates(video: &VideoInfo) -> bool {
@@ -3834,11 +3641,11 @@ pub fn run() {
             commands::update_cmd::restart_app,
             commands::update_cmd::check_update,
             commands::update_cmd::download_update,
-            init_client,
-            get_config,
-            save_config,
-            logout_cookie,
-            select_directory,
+            commands::config::init_client,
+            commands::config::get_config,
+            commands::config::save_config,
+            commands::config::logout_cookie,
+            commands::config::select_directory,
             parse_url,
             parse_link,
             set_video_liked,
@@ -3866,8 +3673,8 @@ pub fn run() {
             get_comment_replies,
             set_comment_liked,
             publish_comment,
-            verify_cookie,
-            get_current_user,
+            commands::config::verify_cookie,
+            commands::config::get_current_user,
             open_verify_browser,
             cookie_browser_login,
             cancel_cookie_browser_login,
