@@ -1,5 +1,6 @@
 import type { Variants } from "framer-motion";
 import { mediaProxyUrl, type CommentInfo } from "@/lib/tauri";
+export * from "./player-types";
 
 export const IMAGE_DURATION_SECONDS = 1.5;
 export const LOAD_MORE_THRESHOLD = 8;
@@ -19,7 +20,7 @@ export const PROGRESS_PREVIEW_WIDTH = 184;
 export const PROGRESS_PREVIEW_HEIGHT = 104;
 export const PROGRESS_PREVIEW_SAMPLE_RATIOS = [0.08, 0.22, 0.38, 0.55, 0.72, 0.88] as const;
 
-export type PlayerPanel = "volume" | "rate" | "quality" | "download" | "music" | "share";
+
 
 export const mediaMotionVariants: Variants = {
   enter: (direction = 0) => ({
@@ -80,24 +81,7 @@ export function formatCommentTime(createTime: number): string {
   return new Date(ms).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
 }
 
-export type CommentRepliesState = Record<
-  string,
-  {
-    items: CommentInfo[];
-    cursor: number;
-    hasMore: boolean;
-    loading: boolean;
-    error: string;
-    total: number;
-    loaded: boolean;
-  }
->;
 
-export type CommentReplyTarget = {
-  replyId: string;
-  replyToReplyId: string;
-  nickname: string;
-} | null;
 
 export function getDocumentVideoNode(reference: HTMLElement | null): HTMLVideoElement | null {
   return reference?.ownerDocument.querySelector("video") || null;
