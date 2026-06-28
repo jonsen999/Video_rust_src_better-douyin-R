@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 
-use super::downloaded_cache::{add_to_downloaded_cache, record_downloaded};
+use super::completion::record_completed_download;
 use super::downloader::DownloadRuntime;
 use super::events::{emit_event, wait_if_paused};
 use super::filename::{create_unique_output_file, media_extension, media_type_display, media_type_name, truncate_chars};
@@ -334,28 +334,21 @@ pub(crate) async fn download_media_group(runtime: DownloadRuntime, task_id: Stri
         }
     }
 
-    if let Some(first_file) = downloaded_files.first() {
-        let mut history_lock = runtime.history.lock().await;
-        let _ = history_lock.add(crate::api::DownloadHistory {
-            aweme_id: task.aweme_id.clone(),
-            title: task.title.clone(),
-            author: task.author.clone(),
-            author_id: task.author_id.clone(),
-            cover: task.cover.clone(),
-            file_path: first_file.to_string_lossy().to_string(),
-            media_type: media_type_name(&task.media_type).to_string(),
-            file_size: total_downloaded_size,
-            create_time: Local::now().timestamp(),
-        });
-    }
-
-    // 写入本地隐藏去重记录
-    if record_downloaded(&save_dir, &task.aweme_id, &runtime.record_write_lock)
-        .await
-        .is_ok()
-    {
-        add_to_downloaded_cache(&runtime.downloaded_cache, &task.aweme_id);
-    }
+    record_completed_download(
+        &task.aweme_id,
+        &task.title,
+        &task.author,
+        &task.author_id,
+        &task.cover,
+        &task.media_type,
+        &save_dir,
+        &downloaded_files,
+        total_downloaded_size,
+        &runtime.history,
+        &runtime.downloaded_cache,
+        &runtime.record_write_lock,
+    )
+    .await?;
 
     emit_event(
         &runtime.progress_tx,

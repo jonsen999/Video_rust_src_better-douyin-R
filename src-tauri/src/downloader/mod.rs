@@ -10,6 +10,9 @@ pub mod downloader;
 mod media_group;
 mod media_request;
 mod quality;
+mod tasks;
+mod streaming;
+mod completion;
 
 pub(crate) use quality::{available_video_quality_height, video_quality_candidate_count};
 pub use quality::video_quality_diagnostic;

@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, Mutex};
 
-use super::downloaded_cache::{add_to_downloaded_cache, record_downloaded};
+use super::completion::record_completed_download;
 use super::downloader::{Downloader, DownloaderEvent};
 use super::events::{emit_event, estimate_batch_eta};
 use super::filename::{build_output_dir, create_unique_output_file, generate_filename_with_config, media_extension, media_type_name, truncate_chars};
@@ -216,29 +216,21 @@ pub(crate) async fn download_single_video(
     )
     .await;
 
-    // 保存到历史
-    if let Some(first_file) = downloaded_files.first() {
-        let mut history_lock = history.lock().await;
-        let _ = history_lock.add(crate::api::DownloadHistory {
-            aweme_id: video.aweme_id.clone(),
-            title: video.desc.clone(),
-            author: video.author.nickname.clone(),
-            author_id: video.author.uid.clone(),
-            cover: video.video.cover.clone(),
-            file_path: first_file.to_string_lossy().to_string(),
-            media_type: media_type_name(&video.media_type).to_string(),
-            file_size: total_size,
-            create_time: Local::now().timestamp(),
-        });
-    }
-
-    // 写入本地隐藏去重记录
-    if record_downloaded(&author_dir, &video.aweme_id, &record_write_lock)
-        .await
-        .is_ok()
-    {
-        add_to_downloaded_cache(&downloaded_cache, &video.aweme_id);
-    }
+    record_completed_download(
+        &video.aweme_id,
+        &video.desc,
+        &video.author.nickname,
+        &video.author.uid,
+        &video.video.cover,
+        &video.media_type,
+        &author_dir,
+        &downloaded_files,
+        total_size,
+        &history,
+        &downloaded_cache,
+        &record_write_lock,
+    )
+    .await?;
 
     Ok(())
 }
