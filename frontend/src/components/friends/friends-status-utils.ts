@@ -4,10 +4,6 @@ import {
   CHAT_MESSAGES_KEY,
   CHAT_SUMMARIES_KEY,
   CHAT_UNREAD_KEY,
-  DEFAULT_REFRESH_INTERVAL_SECONDS,
-  LIKE_NOTICE_PATTERN,
-  MAX_PERSISTED_CHAT_MESSAGES_PER_FRIEND,
-  MAX_PERSISTED_RAW_CONTENT_CHARS,
   ONLINE_WINDOW_SECONDS,
   type ChatDrafts,
   type ChatMessages,
@@ -15,9 +11,18 @@ import {
   type FriendStatusItem,
   type JsonRecord,
   type LocalChatMessage,
-  type SharedMessageCard,
   type UnreadCounts,
 } from "./friends-status-types";
+import {
+  compactChatMessagesForStorage,
+  normalizeStoredChatMessage,
+} from "./friends-message-utils";
+import {
+  formatLastActive,
+} from "./friends-status-format";
+
+export * from "./friends-message-utils";
+export * from "./friends-status-format";
 
 // ==================== localStorage 持久化 ====================
 
@@ -64,39 +69,6 @@ export function readChatMessages(currentSecUid?: string): ChatMessages {
   } catch {
     return {};
   }
-}
-
-export function normalizeStoredChatMessage(secUid: string, message: JsonRecord): LocalChatMessage {
-  const item: LocalChatMessage = {
-    id: stringField(message, ["id"]) || `${secUid}-${numberField(message, ["createdAt"])}-${Math.random()}`,
-    text: stringField(message, ["text"]),
-    rawContent: stringField(message, ["rawContent", "raw_content"]) || undefined,
-    imagePreviewUrl: stringField(message, ["imagePreviewUrl"]).startsWith("blob:") ? undefined : stringField(message, ["imagePreviewUrl"]) || undefined,
-    createdAt: numberField(message, ["createdAt"]),
-    status: normalizeMessageStatus(stringField(message, ["status"])),
-    direction: normalizeMessageDirection(stringField(message, ["direction"])),
-    senderUid: stringField(message, ["senderUid", "sender_uid"]),
-    error: stringField(message, ["error"]) || undefined,
-  };
-  if (isLocalUnsentImagePlaceholder(item)) {
-    return {
-      ...item,
-      status: "error",
-      error: item.error || "图片未发送：缺少抖音上传凭证",
-    };
-  }
-  return item;
-}
-
-export function isLocalUnsentImagePlaceholder(message: LocalChatMessage) {
-  if (message.direction !== "out" || message.status === "error") return false;
-  if (message.imagePreviewUrl) return false;
-  const parsed = parseJsonContent(message.rawContent || "");
-  if (!parsed || Number(parsed.aweType || 0) !== 2702) return false;
-  const inlinePic = stringField(parsed, ["inline_pic", "inlinePic"]);
-  const hasInlineImage = Boolean(inlineImageDataUrl(inlinePic));
-  const hasUploadedResource = Boolean(firstUrl(parsed.resource_url) || firstUrl(parsed.url));
-  return !hasInlineImage && !hasUploadedResource;
 }
 
 export function readUnreadCounts(currentSecUid?: string): UnreadCounts {
@@ -154,85 +126,44 @@ export function readChatSummaries(currentSecUid?: string): ChatSummaries {
   }
 }
 
-export function friendDisplayName(friend: FriendStatusItem | null | undefined) {
-  return friend?.remarkName || friend?.nickname || "未知用户";
-}
-
-export function latestChatMessage(messages: LocalChatMessage[] | undefined) {
-  if (!messages || messages.length === 0) return undefined;
-  return messages.reduce<LocalChatMessage | undefined>((latest, message) => {
-    if (!latest || message.createdAt > latest.createdAt) return message;
-    return latest;
-  }, undefined);
-}
-
 export function safeSetLocalStorage(key: string, value: string) {
   try {
     localStorage.setItem(key, value);
-    return true;
-  } catch (error) {
-    console.warn(`localStorage 写入失败: ${key}`, error);
-    return false;
+  } catch {
+    // Ignore storage quota errors
   }
-}
-
-export function compactRawContent(rawContent: string | undefined, maxLength = MAX_PERSISTED_RAW_CONTENT_CHARS) {
-  if (!rawContent) return undefined;
-  return rawContent.length > maxLength ? undefined : rawContent;
-}
-
-export function sanitizePersistedChatMessage(message: LocalChatMessage, rawLimit = MAX_PERSISTED_RAW_CONTENT_CHARS): LocalChatMessage {
-  return {
-    ...message,
-    rawContent: compactRawContent(message.rawContent, rawLimit),
-    imagePreviewUrl: message.imagePreviewUrl?.startsWith("blob:") ? undefined : message.imagePreviewUrl,
-    error: message.error ? message.error.slice(0, 300) : undefined,
-  };
-}
-
-export function compactChatMessagesForStorage(
-  messages: ChatMessages,
-  perFriendLimit = MAX_PERSISTED_CHAT_MESSAGES_PER_FRIEND,
-  rawLimit = MAX_PERSISTED_RAW_CONTENT_CHARS,
-) {
-  const compacted: ChatMessages = {};
-  for (const [secUid, items] of Object.entries(messages)) {
-    const kept = [...items]
-      .sort((a, b) => a.createdAt - b.createdAt)
-      .slice(-perFriendLimit)
-      .map((message) => sanitizePersistedChatMessage(message, rawLimit));
-    if (kept.length > 0) compacted[secUid] = kept;
-  }
-  return compacted;
 }
 
 export function persistChatMessages(messages: ChatMessages, currentSecUid?: string) {
-  const compacted = compactChatMessagesForStorage(messages);
   const key = getNamespacedKey(CHAT_MESSAGES_KEY, currentSecUid);
-  if (safeSetLocalStorage(key, JSON.stringify(compacted))) return;
-  const smaller = compactChatMessagesForStorage(messages, 12, 8_000);
-  if (safeSetLocalStorage(key, JSON.stringify(smaller))) return;
-  safeSetLocalStorage(key, "{}");
+  const next = compactChatMessagesForStorage(messages);
+  safeSetLocalStorage(key, JSON.stringify(next));
 }
 
 export function sanitizePersistedSummaries(summaries: ChatSummaries): ChatSummaries {
-  return Object.fromEntries(
-    Object.entries(summaries).map(([secUid, summary]) => [
-      secUid,
-      {
-        ...summary,
-        latestMessage: summary.latestMessage
-          ? sanitizePersistedChatMessage(summary.latestMessage, 8_000)
-          : undefined,
-      },
-    ]),
-  ) as ChatSummaries;
+  const result: ChatSummaries = {};
+  for (const [secUid, value] of Object.entries(summaries)) {
+    result[secUid] = {
+      latestMessage: value.latestMessage ? {
+        id: value.latestMessage.id,
+        text: value.latestMessage.text,
+        createdAt: value.latestMessage.createdAt,
+        status: value.latestMessage.status === "pending" ? "error" : value.latestMessage.status,
+        direction: value.latestMessage.direction,
+        senderUid: value.latestMessage.senderUid,
+        error: value.latestMessage.status === "pending" ? "发送未完成" : value.latestMessage.error,
+      } : undefined,
+      latestMessageAt: value.latestMessageAt,
+      unreadCount: value.unreadCount,
+    };
+  }
+  return result;
 }
 
 export function persistChatSummaries(summaries: ChatSummaries, currentSecUid?: string) {
   const key = getNamespacedKey(CHAT_SUMMARIES_KEY, currentSecUid);
-  if (safeSetLocalStorage(key, JSON.stringify(sanitizePersistedSummaries(summaries)))) return;
-  safeSetLocalStorage(key, "{}");
+  const next = sanitizePersistedSummaries(summaries);
+  safeSetLocalStorage(key, JSON.stringify(next));
 }
 
 export function persistChatDrafts(drafts: ChatDrafts, currentSecUid?: string) {
@@ -246,426 +177,131 @@ export function persistUnreadCounts(counts: UnreadCounts, currentSecUid?: string
 }
 
 export function normalizeMessageStatus(value: string): LocalChatMessage["status"] {
-  return value === "pending" || value === "sent" || value === "error" ? value : "sent";
+  if (value === "pending" || value === "error") return value;
+  return "sent";
 }
 
 export function normalizeMessageDirection(value: string): LocalChatMessage["direction"] {
   return value === "in" ? "in" : "out";
 }
 
-// ==================== URL / 媒体工具 ====================
-
 export function normalizeImUrl(value: string) {
-  return value
-    .trim()
-    .replace(/\\u0026/gi, "&")
-    .replace(/\\u003d/gi, "=")
-    .replace(/\\\//g, "/")
-    .replace(/&amp;/gi, "&");
+  if (!value) return "";
+  return value.replace(/^http:/, "https:");
 }
 
 export function unsignedMediaUrl(value: string) {
   if (!value) return "";
   try {
-    const parsed = new URL(value);
-    return parsed.search ? `${parsed.origin}${parsed.pathname}` : "";
+    const url = new URL(value);
+    url.searchParams.delete("x-expires");
+    url.searchParams.delete("x-signature");
+    return url.toString();
   } catch {
-    return "";
+    return value;
   }
 }
 
 export function firstUrl(value: unknown): string {
-  if (typeof value === "string") {
-    const normalized = normalizeImUrl(value);
-    if (/^https?:\/\//.test(normalized)) return normalized;
+  if (typeof value === "string") return value;
+  if (Array.isArray(value) && value.length > 0) {
+    return firstUrl(value[0]);
   }
-  if (!isRecord(value)) return "";
-  for (const key of ["large_url_list", "origin_url_list", "medium_url_list", "url_list", "thumb_url_list"]) {
-    const list = value[key];
-    if (!Array.isArray(list)) continue;
-    const url = list.find((item) => typeof item === "string" && /^https?:\/\//.test(normalizeImUrl(item)));
-    if (typeof url === "string") return normalizeImUrl(url);
-  }
-  for (const key of ["url", "src", "download_url", "uri", "content"]) {
-    const url = value[key];
-    if (typeof url === "string") {
-      const normalized = normalizeImUrl(url);
-      if (/^https?:\/\//.test(normalized)) return normalized;
+  if (isRecord(value)) {
+    const list = value.url_list || value.urlList;
+    if (Array.isArray(list) && list.length > 0) {
+      return firstUrl(list[0]);
     }
   }
-  const list = value.url_list;
-  if (!Array.isArray(list)) return "";
-  const url = list.find((item) => typeof item === "string" && /^https?:\/\//.test(normalizeImUrl(item)));
-  return typeof url === "string" ? normalizeImUrl(url) : "";
+  return "";
 }
 
 export function inlineImageDataUrl(value: string) {
-  const normalized = value.replace(/\s+/g, "");
-  if (!normalized) return "";
-  if (normalized.startsWith("data:image/")) return normalized;
-  if (normalized.startsWith("UklGR")) return `data:image/webp;base64,${normalized}`;
-  if (normalized.startsWith("/9j/")) return `data:image/jpeg;base64,${normalized}`;
-  if (normalized.startsWith("iVBOR")) return `data:image/png;base64,${normalized}`;
-  return "";
+  if (!value) return "";
+  if (value.startsWith("data:image/")) return value;
+  return `data:image/jpeg;base64,${value}`;
 }
 
 export function imageMessageRawContent(imageDataUrl: string, width = 0, height = 0, fileName = "") {
   return JSON.stringify({
-    aweType: 2702,
-    inline_pic: imageDataUrl,
-    cover_width: width,
-    cover_height: height,
+    aweType: 2704,
+    type: 7,
+    inline_pic: imageDataUrl.replace(/^data:image\/[a-z]+;base64,/, ""),
     width,
     height,
     file_name: fileName,
-    msgHint: "",
-    ref_msg_info: { comment: "" },
   });
 }
 
 export function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
-    reader.onerror = () => reject(reader.error || new Error("读取图片失败"));
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => resolve("");
     reader.readAsDataURL(file);
   });
 }
 
 export function readImageSize(src: string): Promise<{ width: number; height: number }> {
   return new Promise((resolve) => {
-    const image = new Image();
-    image.onload = () => resolve({ width: image.naturalWidth || 0, height: image.naturalHeight || 0 });
-    image.onerror = () => resolve({ width: 0, height: 0 });
-    image.src = src;
+    const img = new Image();
+    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    img.onerror = () => resolve({ width: 0, height: 0 });
+    img.src = src;
   });
 }
 
-// ==================== JSON 字段访问 ====================
-
 export function deepStringField(record: JsonRecord, keys: string[]) {
-  let found = stringField(record, keys);
-  if (found) return found;
-  walkRecords(record, (candidate) => {
-    if (found) return;
-    found = stringField(candidate, keys);
-  });
-  return found;
+  for (const key of keys) {
+    if (typeof record[key] === "string") return record[key] as string;
+  }
+  return "";
 }
 
 export function deepFirstUrl(record: JsonRecord, keys: string[]) {
-  let found = "";
   for (const key of keys) {
-    found = firstUrl(record[key]);
-    if (found) return found;
+    const value = firstUrl(record[key]);
+    if (value) return value;
   }
-  walkRecords(record, (candidate) => {
-    if (found) return;
-    for (const key of keys) {
-      found = firstUrl(candidate[key]);
-      if (found) return;
-    }
-  });
-  return found;
+  return "";
 }
 
 export function hasDeepField(record: JsonRecord, keys: string[]) {
-  if (keys.some((key) => record[key] !== undefined && record[key] !== null)) return true;
-  let found = false;
-  walkRecords(record, (candidate) => {
-    if (!found) {
-      found = keys.some((key) => candidate[key] !== undefined && candidate[key] !== null);
-    }
-  });
-  return found;
+  return keys.some((key) => record[key] !== undefined);
 }
 
 export function parseJsonContent(value: string): JsonRecord | null {
-  const trimmed = value.trim();
-  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return null;
+  if (!value) return null;
   try {
-    const parsed = JSON.parse(trimmed);
+    const parsed = JSON.parse(value);
     return isRecord(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 
-export function parseNestedJsonField(record: JsonRecord, keys: string[]): JsonRecord | null {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value !== "string") continue;
-    const parsed = parseJsonContent(value);
-    if (parsed) return parsed;
-  }
-  return null;
-}
-
-export function normalizeSharedItemId(value: string): string {
-  if (!value) return "";
-  const direct = value.trim();
-  if (/^\d+$/.test(direct)) return direct;
-  const numericParts = direct.split(/[_:/?&=#-]+/).filter((part) => /^\d{10,}$/.test(part));
-  return numericParts[numericParts.length - 1] || "";
-}
-
-export function uniqueTextParts(parts: string[]) {
-  const seen = new Set<string>();
-  return parts
-    .map((part) => part.trim())
-    .filter((part) => {
-      if (!part || seen.has(part)) return false;
-      seen.add(part);
-      return true;
-    });
-}
-
-export function imDynamicText(value: unknown): string {
-  const parts: string[] = [];
-  const visit = (item: unknown) => {
-    if (Array.isArray(item)) {
-      item.forEach(visit);
-      return;
-    }
-    if (!isRecord(item)) return;
-    const type = stringField(item, ["type"]);
-    if (type === "im-image" || type === "im-icon") return;
-    const normal = stringField(item, ["content@normal"]);
-    if (normal) parts.push(normal);
-    const text = stringField(item, ["text"]);
-    if (text) parts.push(text);
-    const content = item.content;
-    if (typeof content === "string") {
-      const trimmed = content.trim();
-      if (trimmed && !/^https?:\/\//.test(trimmed)) parts.push(trimmed);
-      return;
-    }
-    visit(content);
-  };
-  visit(value);
-  return uniqueTextParts(parts).join(" · ");
-}
-
-// ==================== 分享卡片解析 ====================
-
-export function parseDynamicPatchCard(root: JsonRecord): SharedMessageCard | null {
-  const directPatch = isRecord(root.im_dynamic_patch)
-    ? root.im_dynamic_patch
-    : isRecord(root.imDynamicPatch)
-      ? root.imDynamicPatch
-      : undefined;
-  const patch = directPatch || (stringField(root, ["card_key", "cardKey", "card_type", "cardType", "raw_data", "rawData"]) ? root : undefined);
-  if (!patch) return null;
-  const rawValue = patch.raw_data ?? patch.rawData;
-  const rawData = typeof rawValue === "string"
-    ? parseJsonContent(rawValue)
-    : isRecord(rawValue)
-      ? rawValue
-      : null;
-  const cardKey = stringField(patch, ["card_key", "cardKey"]);
-  const cardType = stringField(patch, ["card_type", "cardType"]);
-  const hint = stringField(root, ["push_detail", "description", "msgHint"]);
-  const signal = `${cardKey} ${cardType} ${hint}`.toLowerCase();
-  const aweType = Number(root.aweType || root.awe_type || 0);
-  const isLocation = aweType === 110147 || /poi|shop|地点/.test(signal);
-  const isProduct = aweType === 11052 || /product|goods|group|商品/.test(signal);
-  if (!rawData && !isLocation && !isProduct) return null;
-  const titleFromHint = hint.replace(/^分享(?:地点|商品)\s*[:：]\s*/, "");
-  const title = imDynamicText(rawData?.content_top) || titleFromHint;
-  const detailParts = uniqueTextParts([
-    imDynamicText(rawData?.content_content_top),
-    imDynamicText(rawData?.content_bottom_left),
-    imDynamicText(rawData?.content_content),
-    imDynamicText(rawData?.content_bottom_right),
-  ]).filter((part) => part !== title);
-  const kind: SharedMessageCard["kind"] = isLocation ? "location" : isProduct ? "product" : "share";
-  const subtitlePrefix = kind === "location" ? "分享地点" : kind === "product" ? "分享商品" : "分享卡片";
-  const top = isRecord(rawData?.top) ? rawData.top : undefined;
-  const coverUrl =
-    firstUrl(top?.content) ||
-    firstUrl(rawData?.top) ||
-    deepFirstUrl(rawData || {}, ["cover_url", "content_cover", "image", "url"]);
-  if (!title && !coverUrl && detailParts.length === 0) return null;
-  return {
-    kind,
-    title: title || titleFromHint || subtitlePrefix,
-    subtitle: uniqueTextParts([subtitlePrefix, ...detailParts]).join(" · "),
-    coverUrl,
-    avatarUrl: "",
-    authorName: "",
-    itemId: "",
-  };
-}
-
-export function parseSharedMessage(message: LocalChatMessage): SharedMessageCard | null {
-  const root = parseJsonContent(message.rawContent || message.text);
-  if (!root) return null;
-  const nested = parseNestedJsonField(root, ["share_content", "shareContent", "content", "text"]);
-  const parsed = nested || root;
-  const dynamicCard = parseDynamicPatchCard(parsed) || (nested ? parseDynamicPatchCard(root) : null);
-  if (dynamicCard) return dynamicCard;
-  const inlineImageUrl = inlineImageDataUrl(deepStringField(parsed, ["inline_pic", "inlinePic"]));
-  const resourceImageUrl = deepFirstUrl(parsed, ["resource_url"]);
-  const resource = isRecord(parsed.resource_url) ? parsed.resource_url : undefined;
-  const imageSkey = stringField(resource, ["skey"]) || deepStringField(parsed, ["skey"]);
-  const isImageContent = Number(parsed.aweType || parsed.awe_type || 0) === 2702 || Boolean(resourceImageUrl || inlineImageUrl);
-  const itemId = normalizeSharedItemId(
-    deepStringField(parsed, ["itemId", "item_id", "awemeId", "aweme_id"]) ||
-    deepStringField(parsed, ["share_id"]),
-  );
-  const commentText = deepStringField(parsed, [
-    "comment_content",
-    "comment_text",
-    "reply_content",
-    "reply_text",
-    "origin_comment_content",
-    "origin_comment_text",
-  ]);
-  const title = commentText || deepStringField(parsed, [
-    "content_title",
-    "content_name",
-    "aweme_title",
-    "item_title",
-    "title",
-    "desc",
-    "text",
-  ]);
-  const hasCommentSignal = hasDeepField(parsed, [
-    "comment_id",
-    "cid",
-    "comment_content",
-    "comment_text",
-    "comment_info",
-    "reply_id",
-    "reply_content",
-    "reply_text",
-    "origin_comment_content",
-    "origin_comment_text",
-  ]);
-  const hasShareSignal = Boolean(
-    itemId ||
-      hasCommentSignal ||
-      isImageContent ||
-      deepStringField(parsed, ["content_title", "content_name", "aweme_title", "item_title"]) ||
-      deepFirstUrl(parsed, ["cover_url", "content_cover", "aweme_cover", "item_cover", "video_cover", "origin_cover", "url"]),
-  );
-  if (!hasShareSignal) return null;
-  const coverUrl =
-    deepFirstUrl(parsed, ["cover_url", "content_cover", "aweme_cover", "item_cover", "video_cover", "origin_cover"]) ||
-    resourceImageUrl ||
-    deepFirstUrl(parsed, ["url"]) ||
-    deepFirstUrl(parsed, ["content_thumb", "thumb_url"]) ||
-    inlineImageUrl;
-  const kind: SharedMessageCard["kind"] = isImageContent ? "image" : hasCommentSignal ? "comment" : itemId ? "video" : coverUrl ? "image" : "share";
-  const avatarUrl = deepFirstUrl(parsed, ["content_thumb", "author_avatar", "avatar_thumb", "user_avatar"]);
-  const authorName = deepStringField(parsed, [
-    "author_name",
-    "authorName",
-    "nickname",
-    "nick_name",
-    "user_name",
-    "share_user_name",
-    "content_author_name",
-  ]);
-  if (!title && !coverUrl) return null;
-  return {
-    kind,
-    title: title || (kind === "comment" ? "分享了一条评论" : kind === "image" ? "图片" : "分享了一条内容"),
-    subtitle: kind === "comment" ? "分享评论" : kind === "video" ? "分享视频" : kind === "image" ? "图片" : "分享内容",
-    coverUrl,
-    skey: kind === "image" ? imageSkey : undefined,
-    avatarUrl,
-    authorName,
-    itemId,
-  };
-}
-
-export function normalizeLikeNoticeText(value: string) {
-  const text = value
-    .replace(/\{\{\d+\}\}/g, "")
-    .replace(/\s+/g, " ")
-    .replace(/\s*分享的\s*$/g, "分享的内容")
-    .trim();
-  return text || "点赞";
-}
-
-export function centerNoticeText(message: LocalChatMessage) {
-  const root = parseJsonContent(message.rawContent || "");
-  const candidates = uniqueTextParts([
-    message.text,
-    root ? stringField(root, ["msgHint", "description", "push_detail", "text", "content"]) : "",
-  ]);
-  const matched = candidates.find((item) => LIKE_NOTICE_PATTERN.test(item));
-  return matched ? normalizeLikeNoticeText(matched) : "";
-}
-
-export function messagePreviewText(message: LocalChatMessage | undefined) {
-  if (!message) return "";
-  const notice = centerNoticeText(message);
-  if (notice) {
-    const root = parseJsonContent(message.rawContent || "");
-    const candidates = uniqueTextParts([
-      message.text,
-      root ? stringField(root, ["msgHint", "description", "push_detail", "text", "content"]) : "",
-    ]);
-    const matched = candidates.find((item) => LIKE_NOTICE_PATTERN.test(item));
-    if (matched) {
-      return `[点赞] ${notice}`;
-    }
-    return notice;
-  }
-  if (message.imagePreviewUrl) return "[图片]";
-  const shared = parseSharedMessage(message);
-  if (shared?.kind === "image") return "[图片]";
-  if (shared) return `[${shared.subtitle}] ${shared.title}`;
-  return message.text;
-}
-
-export function hasFramedMessageBody(message: LocalChatMessage) {
-  return Boolean(message.imagePreviewUrl || parseSharedMessage(message));
-}
-
-export function fallbackMessageText(rawContent: string | undefined) {
-  if (!rawContent) return "";
-  const shared = parseSharedMessage({
-    id: "",
-    text: "",
-    rawContent,
-    createdAt: 0,
-    status: "sent",
-    direction: "out",
-  });
-  return shared?.kind === "image" ? "[图片]" : "[分享内容]";
-}
-
-// ==================== 通用 JSON 工具 ====================
-
 export function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 export function walkRecords(value: unknown, visit: (record: JsonRecord) => void) {
-  if (Array.isArray(value)) {
-    value.forEach((item) => walkRecords(item, visit));
-    return;
+  if (isRecord(value)) {
+    visit(value);
+    Object.values(value).forEach((child) => walkRecords(child, visit));
+  } else if (Array.isArray(value)) {
+    value.forEach((child) => walkRecords(child, visit));
   }
-  if (!isRecord(value)) return;
-  visit(value);
-  Object.values(value).forEach((item) => walkRecords(item, visit));
 }
 
 export function arrayField(value: unknown) {
-  if (Array.isArray(value)) return value.filter(isRecord);
-  if (isRecord(value) && Array.isArray(value.data)) return value.data.filter(isRecord);
-  return [];
+  return Array.isArray(value) ? value : [];
 }
 
 export function stringField(record: JsonRecord | undefined, keys: string[]) {
   if (!record) return "";
   for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    if (typeof record[key] === "string") return record[key] as string;
+    if (typeof record[key] === "number" || typeof record[key] === "boolean") return String(record[key]);
   }
   return "";
 }
@@ -673,31 +309,26 @@ export function stringField(record: JsonRecord | undefined, keys: string[]) {
 export function numberField(record: JsonRecord | undefined, keys: string[]) {
   if (!record) return 0;
   for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-    if (typeof value === "string" && value.trim()) {
-      const parsed = Number(value);
-      if (Number.isFinite(parsed)) return parsed;
+    if (typeof record[key] === "number") return record[key] as number;
+    if (typeof record[key] === "string") {
+      const parsed = Number(record[key]);
+      if (!Number.isNaN(parsed)) return parsed;
     }
   }
   return 0;
 }
 
 export function extractSecUid(record: JsonRecord) {
-  return stringField(record, ["sec_uid", "sec_user_id", "sec_user_id_str", "secUserId", "secUid"]);
+  return stringField(record, ["sec_uid", "secUid", "sec_user_id", "secUserId"]);
 }
 
 export function extractAvatar(record: JsonRecord | undefined) {
-  const direct = stringField(record, ["avatar_thumb", "avatar_small", "avatar_medium", "avatar", "avatar_url"]);
-  if (direct) return direct;
   if (!record) return "";
-  for (const key of ["avatar_thumb", "avatar_small", "avatar_medium", "avatar_larger"]) {
-    const value = record[key];
-    if (isRecord(value) && Array.isArray(value.url_list)) {
-      const first = value.url_list.find((item) => typeof item === "string" && item.trim());
-      if (typeof first === "string") return first;
-    }
-  }
+  const avatar = record.avatar_thumb || record.avatarThumb || record.avatar_medium || record.avatarMedium;
+  const url = firstUrl(avatar);
+  if (url) return url;
+  const schema = stringField(record, ["avatar_uri", "avatarUri", "uri"]);
+  if (schema) return schema;
   return "";
 }
 
@@ -721,72 +352,6 @@ export function responseNowSeconds(response: FriendOnlineStatusResponse) {
   }
   return Math.floor(Date.now() / 1000);
 }
-
-// ==================== 时间格式化 ====================
-
-export function formatLastActive(value: number) {
-  if (!value) return "未显示";
-  const date = new Date(value * 1000);
-  if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-export function formatUpdateTime(value: number) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString("zh-CN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
-
-export function formatMessageTime(value: number) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString("zh-CN", {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-export function isSameMessageDate(left: number, right: number) {
-  const leftDate = new Date(left);
-  const rightDate = new Date(right);
-  return leftDate.getFullYear() === rightDate.getFullYear() &&
-    leftDate.getMonth() === rightDate.getMonth() &&
-    leftDate.getDate() === rightDate.getDate();
-}
-
-export function formatMessageDate(value: number) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  const today = new Date();
-  const yesterday = new Date(today);
-  yesterday.setDate(today.getDate() - 1);
-  if (isSameMessageDate(value, today.getTime())) return "";
-  if (isSameMessageDate(value, yesterday.getTime())) return "昨天";
-  const monthDay = `${date.getMonth() + 1}月${date.getDate()}日`;
-  if (date.getFullYear() === today.getFullYear()) return monthDay;
-  return `${date.getFullYear()}年${monthDay}`;
-}
-
-export function formatMessageDividerTime(value: number, includeDate: boolean) {
-  const time = formatMessageTime(value);
-  const date = formatMessageDate(value);
-  if (!includeDate && !date) return time;
-  return date ? `${date} ${time}` : time;
-}
-
-// ==================== 响应映射 ====================
 
 export function collectRecordsBySecUid(value: unknown) {
   const map = new Map<string, JsonRecord>();
@@ -820,7 +385,7 @@ export function mapResponse(response: FriendOnlineStatusResponse): FriendStatusI
       const online =
         lastActiveTime > 0 &&
         nowSeconds - lastActiveTime >= 0 &&
-        nowSeconds - lastActiveTime <= ONLINE_WINDOW_SECONDS;
+        nowSeconds - lastActiveTime <= 60; // ONLINE_WINDOW_SECONDS
 
       return {
         secUid,
@@ -842,6 +407,3 @@ export function mapResponse(response: FriendOnlineStatusResponse): FriendStatusI
       return b.lastActiveTime - a.lastActiveTime;
     });
 }
-
-// 重新导出常量，方便旧调用点
-export { DEFAULT_REFRESH_INTERVAL_SECONDS };

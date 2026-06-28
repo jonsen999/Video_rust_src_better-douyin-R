@@ -8,121 +8,69 @@ import { useDownloads } from "@/hooks/use-downloads";
 import {
   getAccounts,
   getConfig,
-  getFriendChatState,
-  getFriendMessageHistory,
   getFriendOnlineStatus,
   getUserDetail,
   getVideoDetail,
   listenEvent,
   saveConfig,
-  saveFriendChatState,
-  sendFriendImageMessage,
-  sendFriendMessage,
   verifyCookie,
-  type FriendOnlineStatusResponse,
 } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { useSearchStore } from "@/stores/search-store";
-import type { FriendMessageHistoryItem, UserInfo, VideoInfo } from "@/lib/contracts";
+import type { UserInfo, VideoInfo } from "@/lib/contracts";
 import {
   COOKIE_REQUIRED_PATTERN,
   CURRENT_USER_AVATAR_KEY,
   DEFAULT_REFRESH_INTERVAL_SECONDS,
-  MAX_SEND_IMAGE_BYTES,
   MIN_BACKGROUND_REFRESH_INTERVAL_MS,
   STORAGE_KEY,
-  type ChatDrafts,
-  type ChatMessages,
-  type ChatSummaries,
   type FriendListItem,
   type FriendStatusItem,
-  type HistoryPageState,
-  type ImConnectionStatus,
-  type JsonRecord,
-  type LocalChatMessage,
   type SharedMessageCard,
-  type UnreadCounts,
 } from "./friends-status-types";
 import {
   extractIds,
-  fallbackMessageText,
   formatUpdateTime,
-  imageMessageRawContent,
-  isRecord,
   latestChatMessage,
   mapResponse,
   messagePreviewText,
-  normalizeMessageDirection,
-  normalizeMessageStatus,
-  numberField,
-  persistChatDrafts,
-  persistChatMessages,
-  persistChatSummaries,
-  persistUnreadCounts,
-  readChatDrafts,
-  readChatMessages,
-  readChatSummaries,
-  readUnreadCounts,
-  readFileAsDataUrl,
-  readImageSize,
   stringField,
 } from "./friends-status-utils";
 import { ChatWorkspace } from "./friends-status-components";
 import { FriendListPanel } from "./friends-list-panel";
+import { useFriendsChat } from "./use-friends-chat";
 
 export function FriendsStatusView() {
   const setView = useAppStore((state) => state.setView);
-  const setFriendUnreadCount = useAppStore((state) => state.setFriendUnreadCount);
   const openUser = useSearchStore((state) => state.openUser);
   const { downloadVideo } = useDownloads();
   const [input, setInput] = useState(() => localStorage.getItem(STORAGE_KEY) || "");
   const [currentSecUid, setCurrentSecUid] = useState<string>("");
-  const [chatDrafts, setChatDrafts] = useState<ChatDrafts>(() => readChatDrafts());
-  const [chatMessages, setChatMessages] = useState<ChatMessages>(() => readChatMessages());
-  const [unreadCounts, setUnreadCounts] = useState<UnreadCounts>(() => readUnreadCounts());
-  const [chatSummaries, setChatSummaries] = useState<ChatSummaries>(() => readChatSummaries());
-  const [selectedFriendId, setSelectedFriendId] = useState("");
-  const [historyState, setHistoryState] = useState<HistoryPageState>({});
+
   const [savedIds, setSavedIds] = useState<string[]>([]);
   const [savedCount, setSavedCount] = useState(0);
   const [includeAllUsers, setIncludeAllUsers] = useState(false);
   const [refreshIntervalSeconds, setRefreshIntervalSeconds] = useState(DEFAULT_REFRESH_INTERVAL_SECONDS);
   const [currentUserAvatar, setCurrentUserAvatar] = useState(() => localStorage.getItem(CURRENT_USER_AVATAR_KEY) || "");
-  const [imStatus, setImStatus] = useState<ImConnectionStatus>({
-    connected: false,
-    message: "接收通道未连接",
-    updatedAt: 0,
-  });
+
   const [showManualInput, setShowManualInput] = useState(false);
   const [loading, setLoading] = useState(false);
   const [backgroundRefreshing, setBackgroundRefreshing] = useState(false);
   const [sharedPlayerVideos, setSharedPlayerVideos] = useState<VideoInfo[]>([]);
   const [sharedPlayerOpen, setSharedPlayerOpen] = useState(false);
   const [sharedPlayerLoadingId, setSharedPlayerLoadingId] = useState("");
-  const [lastUpdatedAt, setLastUpdatedAt] = useState(0);
   const [error, setError] = useState("");
-  const [response, setResponse] = useState<FriendOnlineStatusResponse | null>(null);
-  const savedIdsRef = useRef<string[]>([]);
+  const [response, setResponse] = useState<any>(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState(0);
+
   const idsRef = useRef<string[]>([]);
-  const queryInFlightRef = useRef(false);
-  const pendingBackgroundQueryRef = useRef(false);
+  const savedIdsRef = useRef<string[]>([]);
   const lastQueryStartedAtRef = useRef(0);
   const pendingBackgroundTimerRef = useRef<number | null>(null);
   const cookieRetryTimerRef = useRef<number | null>(null);
   const avatarRetryTimerRef = useRef<number | null>(null);
   const initialInputRef = useRef(input);
-  const chatStateLoadedRef = useRef(false);
-  const selectedFriendIdRef = useRef(selectedFriendId);
-  const currentSecUidRef = useRef(currentSecUid);
-
-  useEffect(() => {
-    currentSecUidRef.current = currentSecUid;
-  }, [currentSecUid]);
-
-  useEffect(() => {
-    selectedFriendIdRef.current = selectedFriendId;
-  }, [selectedFriendId]);
 
   useEffect(() => {
     let active = true;
@@ -130,10 +78,6 @@ export function FriendsStatusView() {
       if (active && res.success && res.current_sec_uid) {
         const uid = res.current_sec_uid;
         setCurrentSecUid(uid);
-        setChatDrafts(readChatDrafts(uid));
-        setChatMessages(readChatMessages(uid));
-        setUnreadCounts(readUnreadCounts(uid));
-        setChatSummaries(readChatSummaries(uid));
       }
     }).catch(() => {});
     return () => { active = false; };
@@ -146,6 +90,25 @@ export function FriendsStatusView() {
     if (!currentSecUid) return rawFriends;
     return rawFriends.filter((f) => f.secUid !== currentSecUid);
   }, [response, currentSecUid]);
+
+  const {
+    chatDrafts,
+    chatMessages,
+    unreadCounts,
+    chatSummaries,
+    historyState,
+    selectedFriendId,
+    selectedFriend,
+    selectedMessages,
+    selectedHistory,
+    imStatus,
+    updateDraft,
+    sendLocalMessage,
+    sendLocalImageMessage,
+    loadHistoryMessages,
+    selectFriend,
+  } = useFriendsChat(friends, currentSecUid, setError);
+
   const friendItems = useMemo<FriendListItem[]>(() => friends
     .map((friend) => {
       const latestMessage = latestChatMessage(chatMessages[friend.secUid]);
@@ -176,12 +139,7 @@ export function FriendsStatusView() {
       }
       return 0;
     }), [chatMessages, chatSummaries, friends, unreadCounts]);
-  const selectedFriend = useMemo(
-    () => friendItems.find((friend) => friend.secUid === selectedFriendId) || null,
-    [friendItems, selectedFriendId],
-  );
-  const selectedMessages = selectedFriend ? chatMessages[selectedFriend.secUid] || [] : [];
-  const selectedHistory = selectedFriend ? historyState[selectedFriend.secUid] : undefined;
+
   const onlineCount = friends.filter((friend) => friend.online).length;
   const offlineCount = friends.filter((friend) => !friend.online).length;
   const isInitialLoading = loading && friends.length === 0;
@@ -229,497 +187,6 @@ export function FriendsStatusView() {
       setSharedPlayerLoadingId("");
     }
   }, [sharedPlayerLoadingId]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void getFriendChatState()
-      .then((result) => {
-        if (cancelled) return;
-        chatStateLoadedRef.current = true;
-        const summaries = isRecord(result.summaries) ? result.summaries : {};
-        const unread = isRecord(result.unreadCounts) ? result.unreadCounts : {};
-        const nextSummaries = readChatSummaries(currentSecUidRef.current);
-        let messagesMerged = false;
-        
-        setChatMessages((currentChatMessages) => {
-          const nextChatMessages = { ...currentChatMessages };
-          for (const [secUid, value] of Object.entries(summaries)) {
-            if (!isRecord(value)) continue;
-            const latestRaw = isRecord(value.latestMessage) ? value.latestMessage : undefined;
-            const latestMessage = latestRaw ? {
-              id: stringField(latestRaw, ["id"]) || `${secUid}-${numberField(latestRaw, ["createdAt"])}`,
-              text: stringField(latestRaw, ["text"]),
-              rawContent: stringField(latestRaw, ["rawContent", "raw_content"]) || undefined,
-              imagePreviewUrl: stringField(latestRaw, ["imagePreviewUrl"]).startsWith("blob:") ? undefined : stringField(latestRaw, ["imagePreviewUrl"]) || undefined,
-              createdAt: numberField(latestRaw, ["createdAt"]),
-              status: normalizeMessageStatus(stringField(latestRaw, ["status"])),
-              direction: normalizeMessageDirection(stringField(latestRaw, ["direction"])),
-              senderUid: stringField(latestRaw, ["senderUid", "sender_uid"]),
-              error: stringField(latestRaw, ["error"]) || undefined,
-            } : undefined;
-
-            if (latestMessage && latestMessage.text) {
-              const currentList = nextChatMessages[secUid] || [];
-              if (!currentList.some((existing) => 
-                existing.id === latestMessage.id || 
-                (existing.text === latestMessage.text && Math.abs(existing.createdAt - latestMessage.createdAt) < 60000)
-              )) {
-                nextChatMessages[secUid] = [...currentList, latestMessage].sort((a, b) => a.createdAt - b.createdAt);
-                messagesMerged = true;
-              }
-            }
-
-            const latestMessageAt = Math.max(numberField(value, ["latestMessageAt"]), latestMessage?.createdAt || 0);
-            const unreadCount = Math.max(0, numberField(value, ["unreadCount"]));
-            const current = nextSummaries[secUid];
-            if (latestMessageAt >= (current?.latestMessageAt || 0)) {
-              nextSummaries[secUid] = {
-                latestMessage: latestMessage?.text ? latestMessage : current?.latestMessage,
-                latestMessageAt,
-                unreadCount: Math.max(unreadCount, current?.unreadCount || 0),
-              };
-            }
-          }
-          if (messagesMerged) {
-            persistChatMessages(nextChatMessages, currentSecUidRef.current);
-          }
-          return nextChatMessages;
-        });
-
-        for (const [secUid, value] of Object.entries(unread)) {
-          const count = Math.max(0, Number(value) || 0);
-          if (!count) continue;
-          nextSummaries[secUid] = {
-            latestMessage: nextSummaries[secUid]?.latestMessage,
-            latestMessageAt: nextSummaries[secUid]?.latestMessageAt || 0,
-            unreadCount: secUid === selectedFriendIdRef.current ? 0 : Math.max(count, nextSummaries[secUid]?.unreadCount || 0),
-          };
-        }
-        persistChatSummaries(nextSummaries, currentSecUidRef.current);
-        setChatSummaries(nextSummaries);
-        setUnreadCounts((current) => {
-          const next = { ...current };
-          for (const [secUid, summary] of Object.entries(nextSummaries)) {
-            if (summary.unreadCount > 0 && secUid !== selectedFriendIdRef.current) {
-              next[secUid] = Math.max(next[secUid] || 0, summary.unreadCount);
-            } else if (secUid === selectedFriendIdRef.current) {
-              delete next[secUid];
-            }
-          }
-          persistUnreadCounts(next, currentSecUidRef.current);
-          return next;
-        });
-      })
-      .catch(() => {
-        chatStateLoadedRef.current = false;
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [currentSecUid]);
-
-  useEffect(() => {
-    setChatSummaries((current) => {
-      let changed = false;
-      const next: ChatSummaries = { ...current };
-      for (const [secUid, messages] of Object.entries(chatMessages)) {
-        const latestMessage = latestChatMessage(messages);
-        if (!latestMessage) continue;
-        const unreadCount = unreadCounts[secUid] || 0;
-        const currentSummary = next[secUid];
-        if (
-          latestMessage.createdAt >= (currentSummary?.latestMessageAt || 0) ||
-          unreadCount !== (currentSummary?.unreadCount || 0)
-        ) {
-          next[secUid] = {
-            latestMessage,
-            latestMessageAt: Math.max(latestMessage.createdAt, currentSummary?.latestMessageAt || 0),
-            unreadCount,
-          };
-          changed = true;
-        }
-      }
-      for (const [secUid, count] of Object.entries(unreadCounts)) {
-        if ((next[secUid]?.unreadCount || 0) === count) continue;
-        next[secUid] = {
-          latestMessage: next[secUid]?.latestMessage,
-          latestMessageAt: next[secUid]?.latestMessageAt || 0,
-          unreadCount: count,
-        };
-        changed = true;
-      }
-      if (!changed) return current;
-      persistChatSummaries(next, currentSecUidRef.current);
-      return next;
-    });
-  }, [chatMessages, unreadCounts]);
-
-  useEffect(() => {
-    const total = Object.values(unreadCounts).reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0);
-    setFriendUnreadCount(total);
-  }, [setFriendUnreadCount, unreadCounts]);
-
-  useEffect(() => {
-    if (!chatStateLoadedRef.current) return;
-    const timer = window.setTimeout(() => {
-      void saveFriendChatState({
-        summaries: chatSummaries,
-        unreadCounts,
-      }, currentSecUidRef.current).catch(() => undefined);
-    }, 350);
-    return () => window.clearTimeout(timer);
-  }, [chatSummaries, unreadCounts]);
-
-  const updateDraft = useCallback((secUid: string, value: string) => {
-    setChatDrafts((current) => {
-      const next = { ...current };
-      if (value) {
-        next[secUid] = value;
-      } else {
-        delete next[secUid];
-      }
-      persistChatDrafts(next, currentSecUidRef.current);
-      return next;
-    });
-  }, []);
-
-  const patchMessage = useCallback((secUid: string, messageId: string, patch: Partial<LocalChatMessage>) => {
-    setChatMessages((current) => {
-      const next = {
-        ...current,
-        [secUid]: (current[secUid] || []).map((message) =>
-          message.id === messageId ? { ...message, ...patch } : message,
-        ),
-      };
-      persistChatMessages(next, currentSecUidRef.current);
-      return next;
-    });
-  }, []);
-
-  const clearUnread = useCallback((secUid: string) => {
-    setUnreadCounts((current) => {
-      const next = { ...current };
-      delete next[secUid];
-      persistUnreadCounts(next, currentSecUidRef.current);
-      return next;
-    });
-    setChatSummaries((current) => {
-      const summary = current[secUid];
-      if (!summary || summary.unreadCount === 0) return current;
-      const next = {
-        ...current,
-        [secUid]: {
-          ...summary,
-          unreadCount: 0,
-        },
-      };
-      persistChatSummaries(next, currentSecUidRef.current);
-      return next;
-    });
-  }, []);
-
-  const sendLocalMessage = useCallback(async (friend: FriendStatusItem, value: string) => {
-    const text = value.trim();
-    if (!text) return;
-    const message: LocalChatMessage = {
-      id: `${friend.secUid}-${Date.now()}`,
-      text,
-      rawContent: undefined,
-      createdAt: Date.now(),
-      status: "pending",
-      direction: "out",
-    };
-    setChatMessages((current) => {
-      const next = {
-        ...current,
-        [friend.secUid]: [...(current[friend.secUid] || []), message],
-      };
-      persistChatMessages(next, currentSecUidRef.current);
-      return next;
-    });
-    updateDraft(friend.secUid, "");
-
-    if (!friend.uid) {
-      patchMessage(friend.secUid, message.id, {
-        status: "error",
-        error: "缺少好友数字 uid，无法发送",
-      });
-      return;
-    }
-
-    try {
-      const result = await sendFriendMessage({ toUserId: friend.uid, content: text });
-      if (!result.success) {
-        throw new Error(result.message || "发送失败");
-      }
-      patchMessage(friend.secUid, message.id, { status: "sent", error: "" });
-    } catch (caught) {
-      patchMessage(friend.secUid, message.id, {
-        status: "error",
-        error: caught instanceof Error ? caught.message : "发送失败",
-      });
-    }
-  }, [patchMessage, updateDraft]);
-
-  const sendLocalImageMessage = useCallback(async (friend: FriendStatusItem, file: File) => {
-    if (!file.type.startsWith("image/")) {
-      setError("请选择图片文件");
-      return;
-    }
-    if (file.size > MAX_SEND_IMAGE_BYTES) {
-      setError("图片不能超过 8MB");
-      return;
-    }
-    if (!friend.uid) {
-      setError("缺少好友数字 uid，无法发送图片");
-      return;
-    }
-    setError("");
-    const imageDataUrl = await readFileAsDataUrl(file);
-    if (!imageDataUrl) {
-      setError("读取图片失败");
-      return;
-    }
-    const size = await readImageSize(imageDataUrl);
-    const message: LocalChatMessage = {
-      id: `${friend.secUid}-${Date.now()}`,
-      text: "[图片]",
-      rawContent: imageMessageRawContent("", size.width, size.height, file.name),
-      imagePreviewUrl: URL.createObjectURL(file),
-      createdAt: Date.now(),
-      status: "pending",
-      direction: "out",
-    };
-    setChatMessages((current) => {
-      const next = {
-        ...current,
-        [friend.secUid]: [...(current[friend.secUid] || []), message],
-      };
-      persistChatMessages(next, currentSecUidRef.current);
-      return next;
-    });
-
-    try {
-      const result = await sendFriendImageMessage({
-        toUserId: friend.uid,
-        imageDataUrl,
-        width: size.width,
-        height: size.height,
-        fileName: file.name,
-        mimeType: file.type,
-      });
-      if (!result.success) {
-        throw new Error(result.message || "发送图片失败");
-      }
-      patchMessage(friend.secUid, message.id, { status: "sent", error: "" });
-    } catch (caught) {
-      patchMessage(friend.secUid, message.id, {
-        status: "error",
-        error: caught instanceof Error ? caught.message : "发送图片失败",
-      });
-    }
-  }, [patchMessage]);
-
-  const selectFriend = useCallback((friend: FriendStatusItem) => {
-    setSelectedFriendId(friend.secUid);
-    clearUnread(friend.secUid);
-  }, [clearUnread]);
-
-  const mergeHistoryMessages = useCallback((items: FriendMessageHistoryItem[], fallbackFriend?: FriendStatusItem | null) => {
-    if (!items.length) return 0;
-    let mergedCount = 0;
-    setChatMessages((current) => {
-      const next: ChatMessages = { ...current };
-      for (const item of items) {
-        const conversationId = stringField(item as JsonRecord, ["conversation_id", "conversationId"]);
-        const senderUid = stringField(item as JsonRecord, ["sender_uid", "senderUid"]);
-        const rawContent = stringField(item as JsonRecord, ["raw_content", "rawContent"]) || undefined;
-        const text = stringField(item as JsonRecord, ["content", "text"]) || fallbackMessageText(rawContent);
-        const messageId = stringField(item as JsonRecord, ["server_message_id", "message_id", "id"]);
-        if (!text) continue;
-        if (text.trim().startsWith('{') && text.includes("command_type")) {
-          continue;
-        }
-        const friend = fallbackFriend || friends.find((candidate) =>
-          (senderUid && candidate.uid === senderUid) ||
-          (candidate.uid && conversationId.includes(candidate.uid))
-        );
-        if (!friend) continue;
-        const rawCreatedAt = numberField(item as JsonRecord, ["created_at", "createdAt", "create_time", "createTime"]);
-        const createdAt = rawCreatedAt > 0 && rawCreatedAt < 10_000_000_000
-          ? rawCreatedAt * 1000
-          : rawCreatedAt || Date.now();
-        const message: LocalChatMessage = {
-          id: messageId || `${friend.secUid}-${createdAt}`,
-          text,
-          rawContent,
-          createdAt,
-          status: "sent",
-          direction: senderUid && senderUid === friend.uid ? "in" : "out",
-          senderUid,
-        };
-        const currentMessages = next[friend.secUid] || [];
-        if (currentMessages.some((existing) => existing.id === message.id)) continue;
-        next[friend.secUid] = [...currentMessages, message].sort((a, b) => a.createdAt - b.createdAt);
-        mergedCount += 1;
-      }
-      if (mergedCount > 0) {
-        persistChatMessages(next, currentSecUidRef.current);
-        return next;
-      }
-      return current;
-    });
-    return mergedCount;
-  }, [friends]);
-
-  const loadHistoryMessages = useCallback(async (friend: FriendStatusItem, cursor = 0) => {
-    const current = historyState[friend.secUid];
-    if (current?.loading) return;
-    if (cursor > 0 && current?.hasMore === false) return;
-    const currentMessages = chatMessages[friend.secUid] || [];
-    setHistoryState((state) => ({
-      ...state,
-      [friend.secUid]: {
-        loaded: Boolean(state[friend.secUid]?.loaded),
-        loading: true,
-        nextCursor: state[friend.secUid]?.nextCursor || 0,
-        hasMore: state[friend.secUid]?.hasMore ?? true,
-        error: "",
-      },
-    }));
-    try {
-      const result = await getFriendMessageHistory({ cursor, toUserId: friend.uid });
-      if (!result.success) {
-        throw new Error(result.message || "获取历史消息失败");
-      }
-      const messages = Array.isArray(result.messages) ? result.messages : [];
-      mergeHistoryMessages(messages, friend);
-      const nextCursor = Number(result.next_cursor || 0) || 0;
-      setHistoryState((state) => ({
-        ...state,
-        [friend.secUid]: {
-          loaded: true,
-          loading: false,
-          nextCursor,
-          hasMore: Boolean(nextCursor && messages.length > 0),
-          error: "",
-        },
-      }));
-    } catch (caught) {
-      setHistoryState((state) => ({
-        ...state,
-        [friend.secUid]: {
-          loaded: cursor === 0 ? true : Boolean(state[friend.secUid]?.loaded),
-          loading: false,
-          nextCursor: state[friend.secUid]?.nextCursor || 0,
-          hasMore: false,
-          error: cursor === 0 && currentMessages.length === 0
-            ? caught instanceof Error ? caught.message : "获取历史消息失败"
-            : "",
-        },
-      }));
-    }
-  }, [chatMessages, historyState, mergeHistoryMessages]);
-
-  useEffect(() => {
-    if (!selectedFriend || !selectedFriend.uid) return;
-    const current = historyState[selectedFriend.secUid];
-    if (current?.loaded || current?.loading) return;
-    void loadHistoryMessages(selectedFriend, 0);
-  }, [historyState, loadHistoryMessages, selectedFriend]);
-
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void listenEvent<Record<string, unknown>>("im-status", (payload) => {
-      if (disposed || !payload || typeof payload !== "object") return;
-      setImStatus({
-        connected: Boolean(payload.connected),
-        message: stringField(payload, ["message"]) || (payload.connected ? "私信接收已连接" : "私信接收未连接"),
-        updatedAt: numberField(payload, ["updated_at", "updatedAt"]) || Date.now(),
-      });
-    }).then((cleanup) => {
-      unlisten = cleanup;
-    });
-    return () => {
-      disposed = true;
-      if (unlisten) unlisten();
-    };
-  }, []);
-
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void listenEvent<Record<string, unknown>>("im-message", (payload) => {
-      if (disposed || !payload || typeof payload !== "object") return;
-      const senderUid = stringField(payload, ["sender_uid", "senderUid"]);
-      const rawContent = stringField(payload, ["raw_content", "rawContent"]) || undefined;
-      const text = stringField(payload, ["content", "text"]) || fallbackMessageText(rawContent);
-      const serverMessageId = stringField(payload, ["server_message_id", "message_id", "id"]);
-      if (!senderUid || !text) return;
-      const friend = friends.find((item) => item.uid === senderUid);
-      if (!friend) return;
-      const message: LocalChatMessage = {
-        id: serverMessageId || `${friend.secUid}-${Date.now()}`,
-        text,
-        rawContent,
-        createdAt: numberField(payload, ["created_at", "createdAt"]) || Date.now(),
-        status: "sent",
-        direction: "in",
-        senderUid,
-      };
-      setChatMessages((current) => {
-        const currentMessages = current[friend.secUid] || [];
-        if (currentMessages.some((item) => item.id === message.id)) return current;
-        const next = {
-          ...current,
-          [friend.secUid]: [...currentMessages, message],
-        };
-        persistChatMessages(next, currentSecUidRef.current);
-        return next;
-      });
-      if (friend.secUid !== selectedFriendId) {
-        setUnreadCounts((current) => {
-          const next = {
-            ...current,
-            [friend.secUid]: (current[friend.secUid] || 0) + 1,
-          };
-          persistUnreadCounts(next, currentSecUidRef.current);
-          return next;
-        });
-      }
-    }).then((cleanup) => {
-      unlisten = cleanup;
-    });
-    return () => {
-      disposed = true;
-      if (unlisten) unlisten();
-    };
-  }, [friends, selectedFriendId, currentSecUid]);
-
-  useEffect(() => {
-    idsRef.current = ids;
-  }, [ids]);
-
-  useEffect(() => {
-    savedIdsRef.current = savedIds;
-  }, [savedIds]);
-
-  useEffect(() => {
-    if (friends.length === 0) {
-      setSelectedFriendId("");
-      return;
-    }
-    if (selectedFriendId && !friends.some((friend) => friend.secUid === selectedFriendId)) {
-      setSelectedFriendId("");
-    }
-  }, [friends, selectedFriendId]);
-
-  useEffect(() => {
-    if (selectedFriend) {
-      clearUnread(selectedFriend.secUid);
-    }
-  }, [clearUnread, selectedFriend]);
 
   const query = useCallback(async (overrideIds?: string[], options?: { background?: boolean; retryCookie?: boolean }) => {
     const background = Boolean(options?.background);
@@ -820,6 +287,17 @@ export function FriendsStatusView() {
       }
     }
   }, []);
+
+  const queryInFlightRef = useRef(false);
+  const pendingBackgroundQueryRef = useRef(false);
+
+  useEffect(() => {
+    idsRef.current = ids;
+  }, [ids]);
+
+  useEffect(() => {
+    savedIdsRef.current = savedIds;
+  }, [savedIds]);
 
   useEffect(() => () => {
     if (cookieRetryTimerRef.current !== null) {
@@ -1062,34 +540,34 @@ export function FriendsStatusView() {
       )}
 
       <div className="grid min-h-0 flex-1 gap-3 overflow-hidden lg:grid-cols-[380px_minmax(0,1fr)] xl:grid-cols-[420px_minmax(0,1fr)]">
-      <FriendListPanel
-        friends={friends}
-        friendItems={friendItems}
-        selectedFriendId={selectedFriendId}
-        onlineCount={onlineCount}
-        offlineCount={offlineCount}
-        isInitialLoading={isInitialLoading}
-        idsLength={ids.length}
-        selectFriend={selectFriend}
-        openFriendProfile={openFriendProfile}
-      />
+        <FriendListPanel
+          friends={friends}
+          friendItems={friendItems}
+          selectedFriendId={selectedFriendId}
+          onlineCount={onlineCount}
+          offlineCount={offlineCount}
+          isInitialLoading={isInitialLoading}
+          idsLength={ids.length}
+          selectFriend={selectFriend}
+          openFriendProfile={openFriendProfile}
+        />
 
-      <ChatWorkspace
-        friend={selectedFriend}
-        draft={selectedFriend ? chatDrafts[selectedFriend.secUid] || "" : ""}
-        messages={selectedMessages}
-        historyError={selectedHistory?.error || ""}
-        historyLoading={Boolean(selectedHistory?.loading)}
-        canLoadOlder={Boolean(selectedFriend && selectedHistory?.nextCursor && selectedHistory.hasMore !== false)}
-        currentUserAvatar={currentUserAvatar}
-        onDraftChange={updateDraft}
-        onSendMessage={sendLocalMessage}
-        onSendImage={sendLocalImageMessage}
-        onLoadOlder={() => selectedFriend && selectedHistory?.nextCursor ? loadHistoryMessages(selectedFriend, selectedHistory.nextCursor) : Promise.resolve()}
-        onOpenProfile={openFriendProfile}
-        onOpenSharedVideo={openSharedVideo}
-        sharedPlayerLoadingId={sharedPlayerLoadingId}
-      />
+        <ChatWorkspace
+          friend={selectedFriend}
+          draft={selectedFriend ? chatDrafts[selectedFriend.secUid] || "" : ""}
+          messages={selectedMessages}
+          historyError={selectedHistory?.error || ""}
+          historyLoading={Boolean(selectedHistory?.loading)}
+          canLoadOlder={Boolean(selectedFriend && selectedHistory?.nextCursor && selectedHistory.hasMore !== false)}
+          currentUserAvatar={currentUserAvatar}
+          onDraftChange={updateDraft}
+          onSendMessage={sendLocalMessage}
+          onSendImage={sendLocalImageMessage}
+          onLoadOlder={() => selectedFriend && selectedHistory?.nextCursor ? loadHistoryMessages(selectedFriend, selectedHistory.nextCursor) : Promise.resolve()}
+          onOpenProfile={openFriendProfile}
+          onOpenSharedVideo={openSharedVideo}
+          sharedPlayerLoadingId={sharedPlayerLoadingId}
+        />
       </div>
       <FullscreenPlayer
         videos={sharedPlayerVideos}
@@ -1101,4 +579,3 @@ export function FriendsStatusView() {
     </div>
   );
 }
-
