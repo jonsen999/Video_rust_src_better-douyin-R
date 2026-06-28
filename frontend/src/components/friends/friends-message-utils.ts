@@ -23,8 +23,6 @@ import {
 } from "./friends-message-format";
 import { isSameMessageDate } from "./friends-status-format";
 
-
-
 export function normalizeStoredChatMessage(secUid: string, message: JsonRecord): LocalChatMessage {
   const item: LocalChatMessage = {
     id: stringField(message, ["id"]) || `${secUid}-${numberField(message, ["createdAt"])}-${Math.random()}`,
@@ -242,8 +240,6 @@ export function parseSharedMessage(message: LocalChatMessage): SharedMessageCard
   };
 }
 
-
-
 export function centerNoticeText(message: LocalChatMessage) {
   if (message.direction === "in" && LIKE_NOTICE_PATTERN.test(message.text)) {
     return "对方点赞了你的作品";
@@ -254,12 +250,8 @@ export function centerNoticeText(message: LocalChatMessage) {
   return null;
 }
 
-
-
 export function hasFramedMessageBody(message: LocalChatMessage) {
   if (message.imagePreviewUrl) return true;
   const shared = parseSharedMessage(message);
   return Boolean(shared);
 }
-
-

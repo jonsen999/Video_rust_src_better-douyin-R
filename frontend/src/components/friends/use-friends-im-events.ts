@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import { listenEvent } from "@/lib/tauri";
 import {
   type ChatMessages,
+  type ChatSummaries,
   type FriendStatusItem,
   type ImConnectionStatus,
   type LocalChatMessage,
@@ -11,6 +12,7 @@ import {
   fallbackMessageText,
   numberField,
   persistChatMessages,
+  persistChatSummaries,
   persistUnreadCounts,
   stringField,
 } from "./friends-status-utils";
@@ -20,6 +22,7 @@ interface ImEventsProps {
   currentSecUid: string;
   selectedFriendIdRef: React.RefObject<string>;
   setChatMessages: React.Dispatch<React.SetStateAction<ChatMessages>>;
+  setChatSummaries: React.Dispatch<React.SetStateAction<ChatSummaries>>;
   setUnreadCounts: React.Dispatch<React.SetStateAction<UnreadCounts>>;
 }
 
@@ -28,6 +31,7 @@ export function useFriendsImEvents({
   currentSecUid,
   selectedFriendIdRef,
   setChatMessages,
+  setChatSummaries,
   setUnreadCounts,
 }: ImEventsProps) {
   const [imStatus, setImStatus] = useState<ImConnectionStatus>({
@@ -93,7 +97,24 @@ export function useFriendsImEvents({
         persistChatMessages(next, currentSecUidRef.current);
         return next;
       });
-      if (friend.secUid !== selectedFriendIdRef.current) {
+      const isSelectedFriend = friend.secUid === selectedFriendIdRef.current;
+      setChatSummaries((current) => {
+        const currentSummary = current[friend.secUid];
+        const nextUnreadCount = isSelectedFriend
+          ? 0
+          : (currentSummary?.unreadCount || 0) + 1;
+        const next = {
+          ...current,
+          [friend.secUid]: {
+            latestMessage: message,
+            latestMessageAt: Math.max(message.createdAt, currentSummary?.latestMessageAt || 0),
+            unreadCount: nextUnreadCount,
+          },
+        };
+        persistChatSummaries(next, currentSecUidRef.current);
+        return next;
+      });
+      if (!isSelectedFriend) {
         setUnreadCounts((current) => {
           const next = {
             ...current,
@@ -110,7 +131,7 @@ export function useFriendsImEvents({
       disposed = true;
       if (unlisten) unlisten();
     };
-  }, [friends, setChatMessages, setUnreadCounts, selectedFriendIdRef]);
+  }, [friends, setChatMessages, setChatSummaries, setUnreadCounts, selectedFriendIdRef]);
 
   return {
     imStatus,

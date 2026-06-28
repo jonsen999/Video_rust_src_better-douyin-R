@@ -129,6 +129,7 @@ export function useFriendsChat(
     currentSecUid,
     selectedFriendIdRef,
     setChatMessages,
+    setChatSummaries,
     setUnreadCounts,
   });
 
