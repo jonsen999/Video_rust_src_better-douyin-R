@@ -9,21 +9,21 @@ import {
   isRecord,
   stringField,
   numberField,
+  firstUrl,
+} from "./friends-response-map";
+import {
   normalizeMessageStatus,
   normalizeMessageDirection,
-  firstUrl,
   inlineImageDataUrl,
   parseJsonContent,
-} from "./friends-status-utils";
+  latestChatMessage,
+  fallbackMessageText,
+  messagePreviewText,
+  normalizeLikeNoticeText,
+} from "./friends-message-format";
 import { isSameMessageDate } from "./friends-status-format";
 
-export function latestChatMessage(messages: LocalChatMessage[] | undefined) {
-  if (!messages || messages.length === 0) return undefined;
-  return messages.reduce<LocalChatMessage | undefined>((latest, message) => {
-    if (!latest || message.createdAt > latest.createdAt) return message;
-    return latest;
-  }, undefined);
-}
+
 
 export function normalizeStoredChatMessage(secUid: string, message: JsonRecord): LocalChatMessage {
   const item: LocalChatMessage = {
@@ -242,10 +242,7 @@ export function parseSharedMessage(message: LocalChatMessage): SharedMessageCard
   };
 }
 
-export function normalizeLikeNoticeText(value: string) {
-  if (!value) return "";
-  return LIKE_NOTICE_PATTERN.test(value) ? "系统提示：对方点赞了你的作品" : value;
-}
+
 
 export function centerNoticeText(message: LocalChatMessage) {
   if (message.direction === "in" && LIKE_NOTICE_PATTERN.test(message.text)) {
@@ -257,15 +254,7 @@ export function centerNoticeText(message: LocalChatMessage) {
   return null;
 }
 
-export function messagePreviewText(message: LocalChatMessage | undefined) {
-  if (!message) return "";
-  if (message.imagePreviewUrl) return "[图片]";
-  const shared = parseSharedMessage(message);
-  if (shared) {
-    return shared.kind === "video" ? "[视频分享]" : shared.kind === "image" ? "[图片分享]" : "[分享卡片]";
-  }
-  return normalizeLikeNoticeText(message.text);
-}
+
 
 export function hasFramedMessageBody(message: LocalChatMessage) {
   if (message.imagePreviewUrl) return true;
@@ -273,16 +262,4 @@ export function hasFramedMessageBody(message: LocalChatMessage) {
   return Boolean(shared);
 }
 
-export function fallbackMessageText(rawContent: string | undefined) {
-  if (!rawContent) return "[未知类型消息]";
-  const parsed = parseJsonContent(rawContent);
-  if (!parsed) return "[未知类型消息]";
-  const aweType = numberField(parsed, ["aweType", "awe_type", "type"]);
-  if (aweType === 2701 || aweType === 5 || aweType === 8) return "[视频分享]";
-  if (aweType === 2702 || aweType === 6) return "[评论分享]";
-  if (aweType === 2704 || aweType === 7) return "[图片分享]";
-  if (aweType === 2705 || aweType === 9) return "[分享卡片]";
-  if (aweType === 2706 || aweType === 10) return "[位置定位]";
-  if (aweType === 2707 || aweType === 11) return "[商品卡片]";
-  return "[卡片消息]";
-}
+
