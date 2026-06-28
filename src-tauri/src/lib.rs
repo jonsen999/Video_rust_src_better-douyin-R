@@ -115,6 +115,7 @@ pub fn run() {
             commands::login::cookie_browser_login,
             commands::login::cancel_cookie_browser_login,
             commands::downloads::download_video,
+            commands::downloads::download_videos,
             commands::downloads::download_user_videos,
             commands::downloads::download_liked_videos,
             commands::downloads::download_liked_authors,

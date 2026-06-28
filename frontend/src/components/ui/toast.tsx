@@ -78,7 +78,7 @@ export function Toaster() {
   const dismiss = useToastStore((s) => s.dismiss);
 
   return (
-    <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[8500] flex flex-col items-center gap-2 pointer-events-none w-full max-w-[340px] px-4">
+    <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[10000] flex flex-col items-center gap-2 pointer-events-none w-full max-w-[340px] px-4">
       <AnimatePresence mode="popLayout" initial={false}>
         {toasts.map((toast, index) => (
           <ToastItem

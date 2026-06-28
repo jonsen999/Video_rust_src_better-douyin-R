@@ -695,3 +695,57 @@ pub(crate) async fn resume_download(
         })),
     }
 }
+
+/// 批量下载指定视频列表
+#[tauri::command]
+pub(crate) async fn download_videos(
+    state: State<'_, AppState>,
+    videos: Vec<serde_json::Value>,
+    name: String,
+) -> Result<serde_json::Value, String> {
+    let mut parsed_videos = Vec::new();
+    for video_val in videos {
+        if let Some(video_info) = video_info_from_download_payload(&video_val) {
+            parsed_videos.push(video_info);
+        }
+    }
+
+    if parsed_videos.is_empty() {
+        return Ok(serde_json::json!({
+            "success": false,
+            "message": "没有可用的视频进行下载"
+        }));
+    }
+
+    let batch_task_id = uuid::Uuid::new_v4().to_string();
+    let total_videos = parsed_videos.len();
+    let batch_task_id_clone = batch_task_id.clone();
+    let name_clone = name.clone();
+
+    let downloader_guard = state.downloader.lock().await;
+    let downloader = downloader_guard
+        .as_ref()
+        .ok_or("Downloader not initialized")?
+        .clone();
+
+    downloader
+        .emit_batch_started(&batch_task_id, &name, total_videos)
+        .await;
+
+    tokio::spawn(async move {
+        if let Err(e) = downloader
+            .start_batch_download(parsed_videos, batch_task_id_clone, name_clone)
+            .await
+        {
+            log::error!("Batch download error: {}", e);
+        }
+    });
+
+    Ok(serde_json::json!({
+        "success": true,
+        "task_id": batch_task_id,
+        "message": format!("开始批量下载 {} 个视频", total_videos),
+        "nickname": name,
+        "total_videos": total_videos
+    }))
+}
