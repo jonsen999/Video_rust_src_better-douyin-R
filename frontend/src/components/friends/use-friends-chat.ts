@@ -47,6 +47,8 @@ import {
 } from "./friends-status-utils";
 import { useFriendsChatPersistence } from "./use-friends-chat-persistence";
 import { useFriendsMessageSender } from "./use-friends-message-sender";
+import { useFriendsMessageHistory } from "./use-friends-message-history";
+import { useFriendsImEvents } from "./use-friends-im-events";
 
 export function useFriendsChat(
   friends: FriendStatusItem[],
@@ -60,13 +62,8 @@ export function useFriendsChat(
   const [unreadCounts, setUnreadCounts] = useState<UnreadCounts>(() => readUnreadCounts(currentSecUid));
   const [chatSummaries, setChatSummaries] = useState<ChatSummaries>(() => readChatSummaries(currentSecUid));
   const [selectedFriendId, setSelectedFriendId] = useState("");
-  const [historyState, setHistoryState] = useState<HistoryPageState>({});
 
-  const [imStatus, setImStatus] = useState<ImConnectionStatus>({
-    connected: false,
-    message: "接收通道未连接",
-    updatedAt: 0,
-  });
+  // Im status is managed by the useFriendsImEvents hook
 
   const chatStateLoadedRef = useRef(false);
   const selectedFriendIdRef = useRef(selectedFriendId);
@@ -92,7 +89,6 @@ export function useFriendsChat(
   );
 
   const selectedMessages = selectedFriend ? chatMessages[selectedFriend.secUid] || [] : [];
-  const selectedHistory = selectedFriend ? historyState[selectedFriend.secUid] : undefined;
 
   const updateDraft = useCallback((secUid: string, value: string) => {
     setChatDrafts((current) => {
@@ -145,177 +141,25 @@ export function useFriendsChat(
     clearUnread(friend.secUid);
   }, [clearUnread]);
 
-  const mergeHistoryMessages = useCallback((items: FriendMessageHistoryItem[], fallbackFriend?: FriendStatusItem | null) => {
-    if (!items.length) return 0;
-    let mergedCount = 0;
-    setChatMessages((current) => {
-      const next: ChatMessages = { ...current };
-      for (const item of items) {
-        const conversationId = stringField(item as JsonRecord, ["conversation_id", "conversationId"]);
-        const senderUid = stringField(item as JsonRecord, ["sender_uid", "senderUid"]);
-        const rawContent = stringField(item as JsonRecord, ["raw_content", "rawContent"]) || undefined;
-        const text = stringField(item as JsonRecord, ["content", "text"]) || fallbackMessageText(rawContent);
-        const messageId = stringField(item as JsonRecord, ["server_message_id", "message_id", "id"]);
-        if (!text) continue;
-        if (text.trim().startsWith('{') && text.includes("command_type")) {
-          continue;
-        }
-        const friend = fallbackFriend || friends.find((candidate) =>
-          (senderUid && candidate.uid === senderUid) ||
-          (candidate.uid && conversationId.includes(candidate.uid))
-        );
-        if (!friend) continue;
-        const rawCreatedAt = numberField(item as JsonRecord, ["created_at", "createdAt", "create_time", "createTime"]);
-        const createdAt = rawCreatedAt > 0 && rawCreatedAt < 10_000_000_000
-          ? rawCreatedAt * 1000
-          : rawCreatedAt || Date.now();
-        const message: LocalChatMessage = {
-          id: messageId || `${friend.secUid}-${createdAt}`,
-          text,
-          rawContent,
-          createdAt,
-          status: "sent",
-          direction: senderUid && senderUid === friend.uid ? "in" : "out",
-          senderUid,
-        };
-        const currentMessages = next[friend.secUid] || [];
-        if (currentMessages.some((existing) => existing.id === message.id)) continue;
-        next[friend.secUid] = [...currentMessages, message].sort((a, b) => a.createdAt - b.createdAt);
-        mergedCount += 1;
-      }
-      if (mergedCount > 0) {
-        persistChatMessages(next, currentSecUidRef.current);
-        return next;
-      }
-      return current;
-    });
-    return mergedCount;
-  }, [friends]);
+  const {
+    historyState,
+    selectedHistory,
+    loadHistoryMessages,
+  } = useFriendsMessageHistory({
+    friends,
+    chatMessages,
+    setChatMessages,
+    currentSecUid,
+    selectedFriend,
+  });
 
-  const loadHistoryMessages = useCallback(async (friend: FriendStatusItem, cursor = 0) => {
-    const current = historyState[friend.secUid];
-    if (current?.loading) return;
-    if (cursor > 0 && current?.hasMore === false) return;
-    const currentMessages = chatMessages[friend.secUid] || [];
-    setHistoryState((state) => ({
-      ...state,
-      [friend.secUid]: {
-        loaded: Boolean(state[friend.secUid]?.loaded),
-        loading: true,
-        nextCursor: state[friend.secUid]?.nextCursor || 0,
-        hasMore: state[friend.secUid]?.hasMore ?? true,
-        error: "",
-      },
-    }));
-    try {
-      const result = await getFriendMessageHistory({ cursor, toUserId: friend.uid });
-      if (!result.success) {
-        throw new Error(result.message || "获取历史消息失败");
-      }
-      const messages = Array.isArray(result.messages) ? result.messages : [];
-      mergeHistoryMessages(messages, friend);
-      const nextCursor = Number(result.next_cursor || 0) || 0;
-      setHistoryState((state) => ({
-        ...state,
-        [friend.secUid]: {
-          loaded: true,
-          loading: false,
-          nextCursor,
-          hasMore: Boolean(nextCursor && messages.length > 0),
-          error: "",
-        },
-      }));
-    } catch (caught) {
-      setHistoryState((state) => ({
-        ...state,
-        [friend.secUid]: {
-          loaded: cursor === 0 ? true : Boolean(state[friend.secUid]?.loaded),
-          loading: false,
-          nextCursor: state[friend.secUid]?.nextCursor || 0,
-          hasMore: false,
-          error: cursor === 0 && currentMessages.length === 0
-            ? caught instanceof Error ? caught.message : "获取历史消息失败"
-            : "",
-        },
-      }));
-    }
-  }, [chatMessages, historyState, mergeHistoryMessages]);
-
-  useEffect(() => {
-    if (!selectedFriend || !selectedFriend.uid) return;
-    const current = historyState[selectedFriend.secUid];
-    if (current?.loaded || current?.loading) return;
-    void loadHistoryMessages(selectedFriend, 0);
-  }, [historyState, loadHistoryMessages, selectedFriend]);
-
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void listenEvent<Record<string, unknown>>("im-status", (payload) => {
-      if (disposed || !payload || typeof payload !== "object") return;
-      setImStatus({
-        connected: Boolean(payload.connected),
-        message: stringField(payload, ["message"]) || (payload.connected ? "私信接收已连接" : "私信接收未连接"),
-        updatedAt: numberField(payload, ["updated_at", "updatedAt"]) || Date.now(),
-      });
-    }).then((cleanup) => {
-      unlisten = cleanup;
-    });
-    return () => {
-      disposed = true;
-      if (unlisten) unlisten();
-    };
-  }, []);
-
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void listenEvent<Record<string, unknown>>("im-message", (payload) => {
-      if (disposed || !payload || typeof payload !== "object") return;
-      const senderUid = stringField(payload, ["sender_uid", "senderUid"]);
-      const rawContent = stringField(payload, ["raw_content", "rawContent"]) || undefined;
-      const text = stringField(payload, ["content", "text"]) || fallbackMessageText(rawContent);
-      const serverMessageId = stringField(payload, ["server_message_id", "message_id", "id"]);
-      if (!senderUid || !text) return;
-      const friend = friends.find((item) => item.uid === senderUid);
-      if (!friend) return;
-      const message: LocalChatMessage = {
-        id: serverMessageId || `${friend.secUid}-${Date.now()}`,
-        text,
-        rawContent,
-        createdAt: numberField(payload, ["created_at", "createdAt"]) || Date.now(),
-        status: "sent",
-        direction: "in",
-        senderUid,
-      };
-      setChatMessages((current) => {
-        const currentMessages = current[friend.secUid] || [];
-        if (currentMessages.some((item) => item.id === message.id)) return current;
-        const next = {
-          ...current,
-          [friend.secUid]: [...currentMessages, message],
-        };
-        persistChatMessages(next, currentSecUidRef.current);
-        return next;
-      });
-      if (friend.secUid !== selectedFriendIdRef.current) {
-        setUnreadCounts((current) => {
-          const next = {
-            ...current,
-            [friend.secUid]: (current[friend.secUid] || 0) + 1,
-          };
-          persistUnreadCounts(next, currentSecUidRef.current);
-          return next;
-        });
-      }
-    }).then((cleanup) => {
-      unlisten = cleanup;
-    });
-    return () => {
-      disposed = true;
-      if (unlisten) unlisten();
-    };
-  }, [friends]);
+  const { imStatus } = useFriendsImEvents({
+    friends,
+    currentSecUid,
+    selectedFriendIdRef,
+    setChatMessages,
+    setUnreadCounts,
+  });
 
   useEffect(() => {
     if (friends.length === 0) {
