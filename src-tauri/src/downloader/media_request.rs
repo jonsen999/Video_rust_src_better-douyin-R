@@ -1,6 +1,6 @@
 //! 媒体下载请求辅助
 
-use crate::api::types::DownloadMediaItem;
+use crate::api::types::{DownloadMediaItem, VideoInfo};
 use crate::api::DouyinClient;
 use crate::config::AppConfig;
 use crate::media_utils::is_dash_video_only_url;
@@ -21,7 +21,7 @@ pub(crate) async fn request_media_with_fallback(
             return Err(anyhow!("下载地址是无声音轨的视频分片，缺少作品ID无法刷新"));
         }
 
-        let fallback_urls = fresh_video_download_urls(config, aweme_id)
+        let fallback_urls = fresh_media_download_urls(config, aweme_id, media.r#type.as_str())
             .await
             .unwrap_or_default();
         for url in fallback_urls {
@@ -53,13 +53,21 @@ pub(crate) async fn request_media_with_fallback(
     }
 
     let initial_status = response.status();
-    if media.r#type != "video" || aweme_id.trim().is_empty() {
+    if aweme_id.trim().is_empty() {
         return Err(anyhow!("HTTP error: {}", initial_status));
     }
 
-    let fallback_urls = fresh_video_download_urls(config, aweme_id)
-        .await
-        .unwrap_or_default();
+    let fallback_urls =
+        match fresh_media_download_urls(config, aweme_id, media.r#type.as_str()).await {
+            Ok(urls) => urls,
+            Err(error) => {
+                return Err(anyhow!(
+                    "HTTP error: {}; refresh failed: {}",
+                    initial_status,
+                    error
+                ));
+            }
+        };
     for url in fallback_urls {
         if url == media.url || is_dash_video_only_url(&url) {
             continue;
@@ -76,14 +84,33 @@ pub(crate) async fn request_media_with_fallback(
         }
     }
 
-    Err(anyhow!("HTTP error: {}", initial_status))
+    Err(anyhow!(
+        "HTTP error: {}; refreshed URLs were also unavailable",
+        initial_status
+    ))
 }
 
-async fn fresh_video_download_urls(config: &AppConfig, aweme_id: &str) -> Result<Vec<String>> {
+async fn fresh_media_download_urls(
+    config: &AppConfig,
+    aweme_id: &str,
+    media_type: &str,
+) -> Result<Vec<String>> {
     let client = DouyinClient::new(config.clone())?;
     let video = client.get_video_detail(aweme_id).await?;
-    Ok(ordered_video_urls(
-        &video,
+    Ok(match media_type {
+        "live_photo" => video.live_photo_urls.unwrap_or_default(),
+        "image" => video.image_urls.unwrap_or_default(),
+        "video" => ordered_video_urls(
+            &video,
+            DownloadQuality::from_config(&config.download_quality),
+        ),
+        _ => fresh_download_urls_for_video(&video, config),
+    })
+}
+
+fn fresh_download_urls_for_video(video: &VideoInfo, config: &AppConfig) -> Vec<String> {
+    ordered_video_urls(
+        video,
         DownloadQuality::from_config(&config.download_quality),
-    ))
+    )
 }

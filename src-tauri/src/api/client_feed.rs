@@ -7,6 +7,9 @@ use super::client::DouyinClient;
 use super::client_content;
 use super::types::*;
 
+const HOME_RECOMMENDED_DETAIL_HYDRATE_LIMIT: usize = 3;
+const HOME_RECOMMENDED_DETAIL_HYDRATE_DELAY_MS: u64 = 180;
+
 fn normalize_recommended_feed_type(value: &str) -> &'static str {
     match value.trim().to_ascii_lowercase().as_str() {
         "recommended" | "recommend" | "tab" | "home" | "feed" => "recommended",
@@ -166,9 +169,8 @@ impl DouyinClient {
             .unwrap_or_else(|| if has_more { refresh_index } else { cursor });
 
         let videos = if let Some(list) = response["aweme_list"].as_array() {
-            // 预解析 fallback 与 aweme_id，避免在并发任务里持有 list 借用。
-            // tab/feed 返回的视频字段不完整（缺少可播放地址），需要逐个请求 detail 刷新。
-            // 用 buffered(4) 并发请求，保持原列表顺序，与 Python 版行为一致。
+            // 预解析 fallback 与 aweme_id。tab/feed 有时返回的视频字段不完整，
+            // 但并发补详情容易触发 aweme/detail 444；只对缺少可播放媒体的前几个条目温和补全。
             let prepared: Vec<(String, Option<VideoInfo>)> = list
                 .iter()
                 .map(|value| {
@@ -184,17 +186,24 @@ impl DouyinClient {
                 })
                 .collect();
 
-            use futures::stream::{self, StreamExt};
-            const HYDRATE_CONCURRENCY: usize = 4;
-            let aweme_ids: Vec<String> = prepared
-                .iter()
-                .map(|(aweme_id, _)| aweme_id.clone())
-                .collect();
-            let hydrated: Vec<Option<VideoInfo>> = stream::iter(aweme_ids)
-                .map(|aweme_id| async move {
-                    if aweme_id.is_empty() {
-                        return None;
+            let mut videos = Vec::new();
+            let mut seen_ids = HashSet::new();
+            let mut hydrated_count = 0usize;
+            let mut hydration_attempts = 0usize;
+
+            for (aweme_id, fallback) in prepared {
+                let fallback = fallback.filter(client_content::is_valid_recommended_video);
+                let maybe_detail = if fallback.is_none()
+                    && !aweme_id.is_empty()
+                    && hydration_attempts < HOME_RECOMMENDED_DETAIL_HYDRATE_LIMIT
+                {
+                    if hydration_attempts > 0 {
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            HOME_RECOMMENDED_DETAIL_HYDRATE_DELAY_MS,
+                        ))
+                        .await;
                     }
+                    hydration_attempts += 1;
                     match self.get_video_detail(&aweme_id).await {
                         Ok(detail) if client_content::is_valid_recommended_video(&detail) => {
                             Some(detail)
@@ -215,20 +224,14 @@ impl DouyinClient {
                             None
                         }
                     }
-                })
-                .buffered(HYDRATE_CONCURRENCY)
-                .collect()
-                .await;
+                } else {
+                    None
+                };
 
-            let mut videos = Vec::new();
-            let mut seen_ids = HashSet::new();
-            let mut hydrated_count = 0usize;
-            for ((_, fallback), maybe_detail) in prepared.into_iter().zip(hydrated) {
                 if maybe_detail.is_some() {
                     hydrated_count += 1;
                 }
-                let video = maybe_detail
-                    .or(fallback.filter(client_content::is_valid_recommended_video));
+                let video = maybe_detail.or(fallback);
                 let Some(video) = video else { continue };
                 if !video.aweme_id.trim().is_empty() && !seen_ids.insert(video.aweme_id.clone()) {
                     continue;
